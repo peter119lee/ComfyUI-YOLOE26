@@ -1,0 +1,126 @@
+{
+  "1": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "example.png"
+    }
+  },
+  "2": {
+    "class_type": "YOLOE26LoadModel",
+    "inputs": {
+      "model_name": "yoloe-26s-seg.pt",
+      "device": "auto"
+    }
+  },
+  "3": {
+    "class_type": "YOLOE26PromptSegment",
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "image": [
+        "1",
+        0
+      ],
+      "prompt": "person",
+      "conf": 0.1,
+      "iou": 0.7,
+      "max_det": 300,
+      "mask_threshold": 0.5,
+      "imgsz": 640,
+      "show_boxes": true,
+      "show_labels": true,
+      "show_conf": true,
+      "show_masks": true
+    }
+  },
+  "4": {
+    "class_type": "YOLOE26DetectionMetadata",
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "image": [
+        "1",
+        0
+      ],
+      "prompt": "person",
+      "conf": 0.1,
+      "iou": 0.7,
+      "max_det": 300,
+      "mask_threshold": 0.5,
+      "imgsz": 640
+    }
+  },
+  "5": {
+    "class_type": "YOLOE26InstanceMasks",
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "image": [
+        "1",
+        0
+      ],
+      "prompt": "person",
+      "conf": 0.1,
+      "iou": 0.7,
+      "max_det": 300,
+      "mask_threshold": 0.5,
+      "imgsz": 640
+    }
+  },
+  "6": {
+    "class_type": "YOLOE26ClassMasks",
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "image": [
+        "1",
+        0
+      ],
+      "prompt": "person,car",
+      "conf": 0.1,
+      "iou": 0.7,
+      "max_det": 300,
+      "mask_threshold": 0.5,
+      "imgsz": 640
+    }
+  },
+  "7": {
+    "class_type": "YOLOE26RefineMask",
+    "inputs": {
+      "masks": [
+        "5",
+        0
+      ],
+      "method": "largest_component",
+      "kernel_size": 3,
+      "iterations": 1,
+      "min_area": 0,
+      "metadata_json": [
+        "5",
+        1
+      ]
+    }
+  },
+  "8": {
+    "class_type": "YOLOE26SelectBestInstance",
+    "inputs": {
+      "instance_masks": [
+        "5",
+        0
+      ],
+      "instance_metadata_json": [
+        "5",
+        1
+      ],
+      "selection_mode": "highest_confidence"
+    }
+  }
+}
