@@ -6,6 +6,7 @@ See README.md for provenance and attribution notes.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -21,7 +22,42 @@ DEFAULT_MASK_THRESHOLD = 0.5
 DEFAULT_IOU = 0.7
 DEFAULT_MAX_DET = 300
 ALLOWED_MODEL_EXTENSIONS = (".pt",)
-REFINE_METHODS = ("threshold", "open", "close", "dilate", "erode", "largest_component", "fill_holes")
+ALLOWED_AUTO_DOWNLOAD_MODELS = {
+    "yoloe-26n-seg.pt": {
+        "repo": "ultralytics/assets",
+        "release": "v8.4.0",
+        "sha256": "f432978449803654a11b386754a7edc96187dca39ea622925b781d3d36a975b8",
+    },
+    "yoloe-26s-seg.pt": {
+        "repo": "ultralytics/assets",
+        "release": "v8.4.0",
+        "sha256": "6f62bc7ed9f86056112c383e9b85023291a3929086af26b1a8762335fe39a17d",
+    },
+    "yoloe-26m-seg.pt": {
+        "repo": "ultralytics/assets",
+        "release": "v8.4.0",
+        "sha256": "214afb47524eebd80add0d8aa32f6731b2b540ff0ea42c57a20b9d76069fc756",
+    },
+    "yoloe-26l-seg.pt": {
+        "repo": "ultralytics/assets",
+        "release": "v8.4.0",
+        "sha256": "a9413bf3f15772c223a03bbedd71b79af5822f830e80aa1b51b1a469e65927b1",
+    },
+    "yoloe-26x-seg.pt": {
+        "repo": "ultralytics/assets",
+        "release": "v8.4.0",
+        "sha256": "6f55ef8985bf91dbea7918200d187494048d14421723e795ee730980aba0f3c2",
+    },
+}
+REFINE_METHODS = (
+    "threshold",
+    "open",
+    "close",
+    "dilate",
+    "erode",
+    "largest_component",
+    "fill_holes",
+)
 SELECTION_MODES = ("highest_confidence", "largest_area", "confidence_then_area")
 
 
@@ -110,9 +146,66 @@ def _create_yoloe(model_path: str):
     return YOLOE(model_path)
 
 
+def _download_auto_download_model(model_name: str) -> str:
+    from ultralytics.utils.downloads import attempt_download_asset
+
+    release = ALLOWED_AUTO_DOWNLOAD_MODELS[model_name].get("release", "v8.4.0")
+    repo = ALLOWED_AUTO_DOWNLOAD_MODELS[model_name].get("repo", "ultralytics/assets")
+    return str(attempt_download_asset(model_name, repo=repo, release=release))
+
+
+def _runtime_model_path(runtime_model: object, fallback_name: str) -> str:
+    ckpt_path = getattr(runtime_model, "ckpt_path", None)
+    if isinstance(ckpt_path, str) and ckpt_path:
+        return ckpt_path
+
+    inner_model = getattr(runtime_model, "model", None)
+    pt_path = getattr(inner_model, "pt_path", None)
+    if isinstance(pt_path, str) and pt_path:
+        return pt_path
+
+    model_name = getattr(runtime_model, "model_name", None)
+    if isinstance(model_name, str) and model_name:
+        return model_name
+
+    return fallback_name
+
+
+def _validate_auto_download_model_name(model_name: str) -> str:
+    name = model_name.strip()
+    if name not in ALLOWED_AUTO_DOWNLOAD_MODELS:
+        raise ValueError(
+            f"Auto-download is only supported for official models: {', '.join(ALLOWED_AUTO_DOWNLOAD_MODELS)}."
+        )
+    return name
+
+
+def _sha256_file(file_path: str) -> str:
+    digest = hashlib.sha256()
+    with open(file_path, "rb") as file_obj:
+        for chunk in iter(lambda: file_obj.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _verify_auto_downloaded_model(model_name: str, resolved_path: str) -> None:
+    expected = ALLOWED_AUTO_DOWNLOAD_MODELS[model_name].get("sha256")
+    if not expected:
+        return
+
+    actual = _sha256_file(resolved_path)
+    if actual != expected:
+        raise RuntimeError(
+            f"Downloaded YOLOE-26 model '{model_name}' failed SHA256 verification. "
+            f"Expected {expected}, got {actual}."
+        )
+
+
 def _validate_model_bundle(model: dict) -> tuple[object, str, str]:
     if not isinstance(model, dict):
-        raise TypeError("model input must be a YOLOE model bundle returned by YOLOE-26 Load Model.")
+        raise TypeError(
+            "model input must be a YOLOE model bundle returned by YOLOE-26 Load Model."
+        )
 
     runtime_model = model.get("model")
     model_path = model.get("model_path")
@@ -128,10 +221,14 @@ def _validate_model_bundle(model: dict) -> tuple[object, str, str]:
         raise ValueError(f"Unsupported device '{device}'.")
 
     if not callable(getattr(runtime_model, "set_classes", None)):
-        raise ValueError("Invalid model bundle: loaded model instance does not implement set_classes().")
+        raise ValueError(
+            "Invalid model bundle: loaded model instance does not implement set_classes()."
+        )
 
     if not callable(getattr(runtime_model, "predict", None)):
-        raise ValueError("Invalid model bundle: loaded model instance does not implement predict().")
+        raise ValueError(
+            "Invalid model bundle: loaded model instance does not implement predict()."
+        )
 
     return runtime_model, model_path, device
 
@@ -210,7 +307,9 @@ def _validate_mask_threshold(mask_threshold: float) -> float:
     return threshold
 
 
-def _build_predict_kwargs(device: str, conf: float, imgsz: int, iou: float, max_det: int) -> dict:
+def _build_predict_kwargs(
+    device: str, conf: float, imgsz: int, iou: float, max_det: int
+) -> dict:
     if not isinstance(conf, (int, float)):
         raise TypeError("conf must be a number between 0 and 1.")
 
@@ -262,7 +361,13 @@ def _prepare_segmentation_runtime(
     return classes, predict_kwargs, yoloe, model_path
 
 
-def _run_single_prediction(yoloe, classes: list[str], model_path: str, img_bgr: np.ndarray, predict_kwargs: dict):
+def _run_single_prediction(
+    yoloe,
+    classes: list[str],
+    model_path: str,
+    img_bgr: np.ndarray,
+    predict_kwargs: dict,
+):
     model_name = Path(model_path).name
     try:
         yoloe.set_classes(classes)
@@ -288,7 +393,11 @@ def _comfy_image_to_bgr(image_tensor: torch.Tensor) -> np.ndarray:
             f"got {tuple(image_tensor.shape)}."
         )
 
-    img_np = (image_tensor.detach().cpu().float().numpy() * 255.0).clip(0, 255).astype(np.uint8)
+    img_np = (
+        (image_tensor.detach().cpu().float().numpy() * 255.0)
+        .clip(0, 255)
+        .astype(np.uint8)
+    )
     return cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
 
 
@@ -303,7 +412,9 @@ def _threshold_mask(mask: np.ndarray, threshold: float) -> np.ndarray:
     return (mask > threshold).astype(np.float32)
 
 
-def _build_binary_mask(result, height: int, width: int, mask_threshold: float = DEFAULT_MASK_THRESHOLD) -> np.ndarray:
+def _build_binary_mask(
+    result, height: int, width: int, mask_threshold: float = DEFAULT_MASK_THRESHOLD
+) -> np.ndarray:
     """Merge all instance masks into a single binary mask (float32 0/1)."""
     mask_threshold = _validate_mask_threshold(mask_threshold)
     merged = np.zeros((height, width), dtype=np.float32)
@@ -320,7 +431,9 @@ def _build_binary_mask(result, height: int, width: int, mask_threshold: float = 
     return merged
 
 
-def _build_per_instance_masks(result, height: int, width: int, mask_threshold: float = DEFAULT_MASK_THRESHOLD) -> list[np.ndarray]:
+def _build_per_instance_masks(
+    result, height: int, width: int, mask_threshold: float = DEFAULT_MASK_THRESHOLD
+) -> list[np.ndarray]:
     """Return a list of individual binary masks (float32 0/1), one per instance."""
     mask_threshold = _validate_mask_threshold(mask_threshold)
     masks: list[np.ndarray] = []
@@ -339,7 +452,9 @@ def _build_per_instance_masks(result, height: int, width: int, mask_threshold: f
 
 def _largest_connected_component(mask: np.ndarray) -> np.ndarray:
     mask_uint8 = (mask > 0.5).astype(np.uint8)
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask_uint8, connectivity=8)
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(
+        mask_uint8, connectivity=8
+    )
     if num_labels <= 1:
         return mask_uint8.astype(np.float32)
 
@@ -367,7 +482,9 @@ def _fill_holes(mask: np.ndarray) -> np.ndarray:
     return np.maximum(mask_uint8, holes).astype(np.float32)
 
 
-def _refine_mask(mask: np.ndarray, method: str, kernel_size: int, iterations: int, min_area: int) -> np.ndarray:
+def _refine_mask(
+    mask: np.ndarray, method: str, kernel_size: int, iterations: int, min_area: int
+) -> np.ndarray:
     refined = (mask > 0.5).astype(np.float32)
     if method == "threshold":
         pass
@@ -378,13 +495,19 @@ def _refine_mask(mask: np.ndarray, method: str, kernel_size: int, iterations: in
     else:
         kernel = np.ones((kernel_size, kernel_size), dtype=np.uint8)
         if method == "dilate":
-            refined = cv2.dilate(refined.astype(np.uint8), kernel, iterations=iterations)
+            refined = cv2.dilate(
+                refined.astype(np.uint8), kernel, iterations=iterations
+            )
         elif method == "erode":
             refined = cv2.erode(refined.astype(np.uint8), kernel, iterations=iterations)
         elif method == "open":
-            refined = cv2.morphologyEx(refined.astype(np.uint8), cv2.MORPH_OPEN, kernel, iterations=iterations)
+            refined = cv2.morphologyEx(
+                refined.astype(np.uint8), cv2.MORPH_OPEN, kernel, iterations=iterations
+            )
         elif method == "close":
-            refined = cv2.morphologyEx(refined.astype(np.uint8), cv2.MORPH_CLOSE, kernel, iterations=iterations)
+            refined = cv2.morphologyEx(
+                refined.astype(np.uint8), cv2.MORPH_CLOSE, kernel, iterations=iterations
+            )
         else:
             raise ValueError(f"Unsupported refine method '{method}'.")
 
@@ -394,7 +517,9 @@ def _refine_mask(mask: np.ndarray, method: str, kernel_size: int, iterations: in
     return refined
 
 
-def _select_best_instance(records: list[dict], instance_masks: list[np.ndarray], selection_mode: str) -> tuple[int, np.ndarray, dict | None]:
+def _select_best_instance(
+    records: list[dict], instance_masks: list[np.ndarray], selection_mode: str
+) -> tuple[int, np.ndarray, dict | None]:
     if not records:
         return -1, np.zeros((0, 0), dtype=np.float32), None
 
@@ -405,7 +530,9 @@ def _select_best_instance(records: list[dict], instance_masks: list[np.ndarray],
             continue
         area = float(record.get("mask_area", 0))
         confidence = float(record.get("confidence", 0.0))
-        candidates.append((confidence, area, int(record.get("instance_index", 0)), record))
+        candidates.append(
+            (confidence, area, int(record.get("instance_index", 0)), record)
+        )
 
     if not candidates:
         height = int(records[0].get("image_height", 0))
@@ -460,7 +587,11 @@ def _extract_detection_records(
             class_name = str(class_id)
 
         box = xyxy_np[instance_index].tolist()
-        mask = instance_masks[instance_index] if instance_index < len(instance_masks) else None
+        mask = (
+            instance_masks[instance_index]
+            if instance_index < len(instance_masks)
+            else None
+        )
         mask_area = int(float(mask.sum())) if mask is not None else 0
 
         records.append(
@@ -469,7 +600,11 @@ def _extract_detection_records(
                 "instance_index": int(instance_index),
                 "class_id": class_id,
                 "class_name": class_name,
-                "confidence": float(conf_np[instance_index]) if instance_index < len(conf_np) else 0.0,
+                "confidence": (
+                    float(conf_np[instance_index])
+                    if instance_index < len(conf_np)
+                    else 0.0
+                ),
                 "bbox_xyxy": [float(value) for value in box],
                 "mask_index": int(instance_index) if mask is not None else None,
                 "mask_area": mask_area,
@@ -529,27 +664,44 @@ def _serialize_metadata(payload: dict) -> str:
 # Node: Model Loader
 # ---------------------------------------------------------------------------
 
+
 class YOLOE26LoadModel:
-    """Validate and prepare a local YOLOE-26 model for prompt segmentation."""
+    """Validate and prepare a YOLOE-26 model for prompt segmentation."""
 
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "model_name": ("STRING", {
-                    "default": "yoloe-26s-seg.pt",
-                    "tooltip": (
-                        "Local YOLOE-26 model file name. Place the weight file in "
-                        "ComfyUI/models/ultralytics/segm/, ComfyUI/models/ultralytics/, "
-                        "or ComfyUI/models/yoloe/."
-                    ),
-                }),
+                "model_name": (
+                    "STRING",
+                    {
+                        "default": "yoloe-26s-seg.pt",
+                        "tooltip": (
+                            "Local YOLOE-26 model file name. Place the weight file in "
+                            "ComfyUI/models/ultralytics/segm/, ComfyUI/models/ultralytics/, "
+                            "or ComfyUI/models/yoloe/."
+                        ),
+                    },
+                ),
             },
             "optional": {
-                "device": (_device_choices(), {
-                    "default": "auto",
-                    "tooltip": "Inference device. 'auto' lets Ultralytics choose.",
-                }),
+                "device": (
+                    _device_choices(),
+                    {
+                        "default": "auto",
+                        "tooltip": "Inference device. 'auto' lets Ultralytics choose.",
+                    },
+                ),
+                "auto_download": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": (
+                            "If enabled, let Ultralytics try to download the model when the local "
+                            "weight file is not found in supported ComfyUI model directories."
+                        ),
+                    },
+                ),
             },
         }
 
@@ -558,18 +710,35 @@ class YOLOE26LoadModel:
     FUNCTION = "load_model"
     CATEGORY = "YOLOE26"
 
-    def load_model(self, model_name: str, device: str = "auto"):
+    def load_model(
+        self, model_name: str, device: str = "auto", auto_download: bool = False
+    ):
         if _validate_device(device) != device:
             raise ValueError(f"Unsupported device '{device}'.")
 
-        resolved = _resolve_model_path(model_name)
-
         try:
-            runtime_model = _create_yoloe(resolved)
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to validate YOLOE-26 model '{Path(resolved).name}': {exc}"
-            ) from exc
+            resolved = _resolve_model_path(model_name)
+        except FileNotFoundError as exc:
+            if not auto_download:
+                raise FileNotFoundError(
+                    f"{exc} Enable auto_download to let Ultralytics try downloading '{model_name}'."
+                ) from exc
+            approved_model_name = _validate_auto_download_model_name(model_name)
+            try:
+                resolved = _download_auto_download_model(approved_model_name)
+                _verify_auto_downloaded_model(approved_model_name, resolved)
+                runtime_model = _create_yoloe(resolved)
+            except Exception as download_exc:
+                raise RuntimeError(
+                    f"Failed to auto-download YOLOE-26 model '{approved_model_name}': {download_exc}"
+                ) from download_exc
+        else:
+            try:
+                runtime_model = _create_yoloe(resolved)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to validate YOLOE-26 model '{Path(resolved).name}': {exc}"
+                ) from exc
 
         return ({"model": runtime_model, "model_path": resolved, "device": device},)
 
@@ -577,6 +746,7 @@ class YOLOE26LoadModel:
 # ---------------------------------------------------------------------------
 # Node: Prompt Segment
 # ---------------------------------------------------------------------------
+
 
 class YOLOE26PromptSegment:
     """Run open-vocabulary segmentation with a text prompt on YOLOE-26.
@@ -590,52 +760,70 @@ class YOLOE26PromptSegment:
             "required": {
                 "model": ("YOLOE_MODEL",),
                 "image": ("IMAGE",),
-                "prompt": ("STRING", {
-                    "default": "person",
-                    "multiline": False,
-                    "tooltip": (
-                        "Text prompt for open-vocabulary segmentation. "
-                        "Separate multiple classes with commas, e.g. "
-                        "'person, car, dog'."
-                    ),
-                }),
+                "prompt": (
+                    "STRING",
+                    {
+                        "default": "person",
+                        "multiline": False,
+                        "tooltip": (
+                            "Text prompt for open-vocabulary segmentation. "
+                            "Separate multiple classes with commas, e.g. "
+                            "'person, car, dog'."
+                        ),
+                    },
+                ),
             },
             "optional": {
-                "conf": ("FLOAT", {
-                    "default": 0.1,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
-                    "tooltip": "Detection confidence threshold.",
-                }),
-                "iou": ("FLOAT", {
-                    "default": DEFAULT_IOU,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
-                    "tooltip": "IoU threshold used by Ultralytics inference.",
-                }),
-                "max_det": ("INT", {
-                    "default": DEFAULT_MAX_DET,
-                    "min": 1,
-                    "max": 1000,
-                    "step": 1,
-                    "tooltip": "Maximum number of detections returned per image.",
-                }),
-                "mask_threshold": ("FLOAT", {
-                    "default": DEFAULT_MASK_THRESHOLD,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
-                    "tooltip": "Threshold used to binarize instance masks.",
-                }),
-                "imgsz": ("INT", {
-                    "default": 640,
-                    "min": 64,
-                    "max": MAX_IMGSZ,
-                    "step": 32,
-                    "tooltip": "Inference image size.",
-                }),
+                "conf": (
+                    "FLOAT",
+                    {
+                        "default": 0.1,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "Detection confidence threshold.",
+                    },
+                ),
+                "iou": (
+                    "FLOAT",
+                    {
+                        "default": DEFAULT_IOU,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "IoU threshold used by Ultralytics inference.",
+                    },
+                ),
+                "max_det": (
+                    "INT",
+                    {
+                        "default": DEFAULT_MAX_DET,
+                        "min": 1,
+                        "max": 1000,
+                        "step": 1,
+                        "tooltip": "Maximum number of detections returned per image.",
+                    },
+                ),
+                "mask_threshold": (
+                    "FLOAT",
+                    {
+                        "default": DEFAULT_MASK_THRESHOLD,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "Threshold used to binarize instance masks.",
+                    },
+                ),
+                "imgsz": (
+                    "INT",
+                    {
+                        "default": 640,
+                        "min": 64,
+                        "max": MAX_IMGSZ,
+                        "step": 32,
+                        "tooltip": "Inference image size.",
+                    },
+                ),
                 "show_boxes": ("BOOLEAN", {"default": True}),
                 "show_labels": ("BOOLEAN", {"default": True}),
                 "show_conf": ("BOOLEAN", {"default": True}),
@@ -675,8 +863,12 @@ class YOLOE26PromptSegment:
         for index in range(image.shape[0]):
             img_bgr = _comfy_image_to_bgr(image[index])
             height, width = img_bgr.shape[:2]
-            result = _run_single_prediction(yoloe, classes, model_path, img_bgr, predict_kwargs)
-            instance_masks = _build_per_instance_masks(result, height, width, mask_threshold)
+            result = _run_single_prediction(
+                yoloe, classes, model_path, img_bgr, predict_kwargs
+            )
+            instance_masks = _build_per_instance_masks(
+                result, height, width, mask_threshold
+            )
 
             annotated_bgr = result.plot(
                 conf=show_conf,
@@ -704,6 +896,7 @@ class YOLOE26PromptSegment:
 # Node: Detection Metadata
 # ---------------------------------------------------------------------------
 
+
 class YOLOE26DetectionMetadata:
     """Run YOLOE-26 prompt segmentation and return structured detection metadata as JSON."""
 
@@ -713,51 +906,69 @@ class YOLOE26DetectionMetadata:
             "required": {
                 "model": ("YOLOE_MODEL",),
                 "image": ("IMAGE",),
-                "prompt": ("STRING", {
-                    "default": "person",
-                    "multiline": False,
-                    "tooltip": (
-                        "Text prompt for open-vocabulary segmentation. "
-                        "Separate multiple classes with commas."
-                    ),
-                }),
+                "prompt": (
+                    "STRING",
+                    {
+                        "default": "person",
+                        "multiline": False,
+                        "tooltip": (
+                            "Text prompt for open-vocabulary segmentation. "
+                            "Separate multiple classes with commas."
+                        ),
+                    },
+                ),
             },
             "optional": {
-                "conf": ("FLOAT", {
-                    "default": 0.1,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
-                    "tooltip": "Detection confidence threshold.",
-                }),
-                "iou": ("FLOAT", {
-                    "default": DEFAULT_IOU,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
-                    "tooltip": "IoU threshold used by Ultralytics inference.",
-                }),
-                "max_det": ("INT", {
-                    "default": DEFAULT_MAX_DET,
-                    "min": 1,
-                    "max": 1000,
-                    "step": 1,
-                    "tooltip": "Maximum number of detections returned per image.",
-                }),
-                "mask_threshold": ("FLOAT", {
-                    "default": DEFAULT_MASK_THRESHOLD,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
-                    "tooltip": "Threshold used when measuring instance mask area.",
-                }),
-                "imgsz": ("INT", {
-                    "default": 640,
-                    "min": 64,
-                    "max": MAX_IMGSZ,
-                    "step": 32,
-                    "tooltip": "Inference image size.",
-                }),
+                "conf": (
+                    "FLOAT",
+                    {
+                        "default": 0.1,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "Detection confidence threshold.",
+                    },
+                ),
+                "iou": (
+                    "FLOAT",
+                    {
+                        "default": DEFAULT_IOU,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "IoU threshold used by Ultralytics inference.",
+                    },
+                ),
+                "max_det": (
+                    "INT",
+                    {
+                        "default": DEFAULT_MAX_DET,
+                        "min": 1,
+                        "max": 1000,
+                        "step": 1,
+                        "tooltip": "Maximum number of detections returned per image.",
+                    },
+                ),
+                "mask_threshold": (
+                    "FLOAT",
+                    {
+                        "default": DEFAULT_MASK_THRESHOLD,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "Threshold used when measuring instance mask area.",
+                    },
+                ),
+                "imgsz": (
+                    "INT",
+                    {
+                        "default": 640,
+                        "min": 64,
+                        "max": MAX_IMGSZ,
+                        "step": 32,
+                        "tooltip": "Inference image size.",
+                    },
+                ),
             },
         }
 
@@ -788,8 +999,12 @@ class YOLOE26DetectionMetadata:
         for batch_index in range(image.shape[0]):
             img_bgr = _comfy_image_to_bgr(image[batch_index])
             height, width = img_bgr.shape[:2]
-            result = _run_single_prediction(yoloe, classes, model_path, img_bgr, predict_kwargs)
-            instance_masks = _build_per_instance_masks(result, height, width, mask_threshold)
+            result = _run_single_prediction(
+                yoloe, classes, model_path, img_bgr, predict_kwargs
+            )
+            instance_masks = _build_per_instance_masks(
+                result, height, width, mask_threshold
+            )
             records = _extract_detection_records(
                 result,
                 classes,
@@ -842,51 +1057,69 @@ class YOLOE26InstanceMasks:
             "required": {
                 "model": ("YOLOE_MODEL",),
                 "image": ("IMAGE",),
-                "prompt": ("STRING", {
-                    "default": "person",
-                    "multiline": False,
-                    "tooltip": (
-                        "Text prompt for open-vocabulary segmentation. "
-                        "Separate multiple classes with commas."
-                    ),
-                }),
+                "prompt": (
+                    "STRING",
+                    {
+                        "default": "person",
+                        "multiline": False,
+                        "tooltip": (
+                            "Text prompt for open-vocabulary segmentation. "
+                            "Separate multiple classes with commas."
+                        ),
+                    },
+                ),
             },
             "optional": {
-                "conf": ("FLOAT", {
-                    "default": 0.1,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
-                    "tooltip": "Detection confidence threshold.",
-                }),
-                "iou": ("FLOAT", {
-                    "default": DEFAULT_IOU,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
-                    "tooltip": "IoU threshold used by Ultralytics inference.",
-                }),
-                "max_det": ("INT", {
-                    "default": DEFAULT_MAX_DET,
-                    "min": 1,
-                    "max": 1000,
-                    "step": 1,
-                    "tooltip": "Maximum number of detections returned per image.",
-                }),
-                "mask_threshold": ("FLOAT", {
-                    "default": DEFAULT_MASK_THRESHOLD,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
-                    "tooltip": "Threshold used when binarizing instance masks.",
-                }),
-                "imgsz": ("INT", {
-                    "default": 640,
-                    "min": 64,
-                    "max": MAX_IMGSZ,
-                    "step": 32,
-                    "tooltip": "Inference image size.",
-                }),
+                "conf": (
+                    "FLOAT",
+                    {
+                        "default": 0.1,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "Detection confidence threshold.",
+                    },
+                ),
+                "iou": (
+                    "FLOAT",
+                    {
+                        "default": DEFAULT_IOU,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "IoU threshold used by Ultralytics inference.",
+                    },
+                ),
+                "max_det": (
+                    "INT",
+                    {
+                        "default": DEFAULT_MAX_DET,
+                        "min": 1,
+                        "max": 1000,
+                        "step": 1,
+                        "tooltip": "Maximum number of detections returned per image.",
+                    },
+                ),
+                "mask_threshold": (
+                    "FLOAT",
+                    {
+                        "default": DEFAULT_MASK_THRESHOLD,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "Threshold used when binarizing instance masks.",
+                    },
+                ),
+                "imgsz": (
+                    "INT",
+                    {
+                        "default": 640,
+                        "min": 64,
+                        "max": MAX_IMGSZ,
+                        "step": 32,
+                        "tooltip": "Inference image size.",
+                    },
+                ),
             },
         }
 
@@ -918,9 +1151,13 @@ class YOLOE26InstanceMasks:
         for batch_index in range(image.shape[0]):
             img_bgr = _comfy_image_to_bgr(image[batch_index])
             height, width = img_bgr.shape[:2]
-            result = _run_single_prediction(yoloe, classes, model_path, img_bgr, predict_kwargs)
+            result = _run_single_prediction(
+                yoloe, classes, model_path, img_bgr, predict_kwargs
+            )
 
-            instance_masks = _build_per_instance_masks(result, height, width, mask_threshold)
+            instance_masks = _build_per_instance_masks(
+                result, height, width, mask_threshold
+            )
             records = _extract_detection_records(
                 result,
                 classes,
@@ -990,51 +1227,69 @@ class YOLOE26ClassMasks:
             "required": {
                 "model": ("YOLOE_MODEL",),
                 "image": ("IMAGE",),
-                "prompt": ("STRING", {
-                    "default": "person",
-                    "multiline": False,
-                    "tooltip": (
-                        "Text prompt for open-vocabulary segmentation. "
-                        "Separate multiple classes with commas."
-                    ),
-                }),
+                "prompt": (
+                    "STRING",
+                    {
+                        "default": "person",
+                        "multiline": False,
+                        "tooltip": (
+                            "Text prompt for open-vocabulary segmentation. "
+                            "Separate multiple classes with commas."
+                        ),
+                    },
+                ),
             },
             "optional": {
-                "conf": ("FLOAT", {
-                    "default": 0.1,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
-                    "tooltip": "Detection confidence threshold.",
-                }),
-                "iou": ("FLOAT", {
-                    "default": DEFAULT_IOU,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
-                    "tooltip": "IoU threshold used by Ultralytics inference.",
-                }),
-                "max_det": ("INT", {
-                    "default": DEFAULT_MAX_DET,
-                    "min": 1,
-                    "max": 1000,
-                    "step": 1,
-                    "tooltip": "Maximum number of detections returned per image.",
-                }),
-                "mask_threshold": ("FLOAT", {
-                    "default": DEFAULT_MASK_THRESHOLD,
-                    "min": 0.0,
-                    "max": 1.0,
-                    "step": 0.01,
-                    "tooltip": "Threshold used when binarizing instance masks.",
-                }),
-                "imgsz": ("INT", {
-                    "default": 640,
-                    "min": 64,
-                    "max": MAX_IMGSZ,
-                    "step": 32,
-                    "tooltip": "Inference image size.",
-                }),
+                "conf": (
+                    "FLOAT",
+                    {
+                        "default": 0.1,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "Detection confidence threshold.",
+                    },
+                ),
+                "iou": (
+                    "FLOAT",
+                    {
+                        "default": DEFAULT_IOU,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "IoU threshold used by Ultralytics inference.",
+                    },
+                ),
+                "max_det": (
+                    "INT",
+                    {
+                        "default": DEFAULT_MAX_DET,
+                        "min": 1,
+                        "max": 1000,
+                        "step": 1,
+                        "tooltip": "Maximum number of detections returned per image.",
+                    },
+                ),
+                "mask_threshold": (
+                    "FLOAT",
+                    {
+                        "default": DEFAULT_MASK_THRESHOLD,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "Threshold used when binarizing instance masks.",
+                    },
+                ),
+                "imgsz": (
+                    "INT",
+                    {
+                        "default": 640,
+                        "min": 64,
+                        "max": MAX_IMGSZ,
+                        "step": 32,
+                        "tooltip": "Inference image size.",
+                    },
+                ),
             },
         }
 
@@ -1065,8 +1320,12 @@ class YOLOE26ClassMasks:
         for batch_index in range(image.shape[0]):
             img_bgr = _comfy_image_to_bgr(image[batch_index])
             height, width = img_bgr.shape[:2]
-            result = _run_single_prediction(yoloe, classes, model_path, img_bgr, predict_kwargs)
-            instance_masks = _build_per_instance_masks(result, height, width, mask_threshold)
+            result = _run_single_prediction(
+                yoloe, classes, model_path, img_bgr, predict_kwargs
+            )
+            instance_masks = _build_per_instance_masks(
+                result, height, width, mask_threshold
+            )
             records = _extract_detection_records(
                 result,
                 classes,
@@ -1121,36 +1380,51 @@ class YOLOE26RefineMask:
                 "masks": ("MASK",),
             },
             "optional": {
-                "method": (REFINE_METHODS, {
-                    "default": "threshold",
-                    "tooltip": "Refinement operation applied to each input mask.",
-                }),
-                "kernel_size": ("INT", {
-                    "default": 3,
-                    "min": 1,
-                    "max": 99,
-                    "step": 2,
-                    "tooltip": "Kernel size used by morphology operations.",
-                }),
-                "iterations": ("INT", {
-                    "default": 1,
-                    "min": 1,
-                    "max": 32,
-                    "step": 1,
-                    "tooltip": "Number of morphology iterations.",
-                }),
-                "min_area": ("INT", {
-                    "default": 0,
-                    "min": 0,
-                    "max": 100000000,
-                    "step": 1,
-                    "tooltip": "Drop refined masks smaller than this area.",
-                }),
-                "metadata_json": ("STRING", {
-                    "default": "",
-                    "multiline": True,
-                    "tooltip": "Optional upstream metadata JSON to preserve and annotate.",
-                }),
+                "method": (
+                    REFINE_METHODS,
+                    {
+                        "default": "threshold",
+                        "tooltip": "Refinement operation applied to each input mask.",
+                    },
+                ),
+                "kernel_size": (
+                    "INT",
+                    {
+                        "default": 3,
+                        "min": 1,
+                        "max": 99,
+                        "step": 2,
+                        "tooltip": "Kernel size used by morphology operations.",
+                    },
+                ),
+                "iterations": (
+                    "INT",
+                    {
+                        "default": 1,
+                        "min": 1,
+                        "max": 32,
+                        "step": 1,
+                        "tooltip": "Number of morphology iterations.",
+                    },
+                ),
+                "min_area": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 100000000,
+                        "step": 1,
+                        "tooltip": "Drop refined masks smaller than this area.",
+                    },
+                ),
+                "metadata_json": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": True,
+                        "tooltip": "Optional upstream metadata JSON to preserve and annotate.",
+                    },
+                ),
             },
         }
 
@@ -1171,14 +1445,22 @@ class YOLOE26RefineMask:
         mask_batch = _validate_mask_batch(masks, "YOLOE-26 Refine Mask")
 
         if not isinstance(kernel_size, int) or kernel_size < 1:
-            raise ValueError("kernel_size must be an integer greater than or equal to 1.")
+            raise ValueError(
+                "kernel_size must be an integer greater than or equal to 1."
+            )
         if not isinstance(iterations, int) or iterations < 1:
-            raise ValueError("iterations must be an integer greater than or equal to 1.")
+            raise ValueError(
+                "iterations must be an integer greater than or equal to 1."
+            )
         if not isinstance(min_area, int) or min_area < 0:
             raise ValueError("min_area must be an integer greater than or equal to 0.")
 
         refined_masks = [
-            torch.from_numpy(_refine_mask(mask_batch[index].numpy(), method, kernel_size, iterations, min_area))
+            torch.from_numpy(
+                _refine_mask(
+                    mask_batch[index].numpy(), method, kernel_size, iterations, min_area
+                )
+            )
             for index in range(mask_batch.shape[0])
         ]
         refined_batch = torch.stack(refined_masks, dim=0)
@@ -1205,7 +1487,11 @@ class YOLOE26RefineMask:
         if "output_mask_count" in payload:
             payload["output_mask_count"] = int(refined_batch.shape[0])
 
-        return (refined_batch, _serialize_metadata(payload), int(refined_batch.shape[0]))
+        return (
+            refined_batch,
+            _serialize_metadata(payload),
+            int(refined_batch.shape[0]),
+        )
 
 
 class YOLOE26SelectBestInstance:
@@ -1216,17 +1502,23 @@ class YOLOE26SelectBestInstance:
         return {
             "required": {
                 "instance_masks": ("MASK",),
-                "instance_metadata_json": ("STRING", {
-                    "default": "",
-                    "multiline": True,
-                    "tooltip": "Metadata JSON produced by YOLOE-26 Instance Masks.",
-                }),
+                "instance_metadata_json": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": True,
+                        "tooltip": "Metadata JSON produced by YOLOE-26 Instance Masks.",
+                    },
+                ),
             },
             "optional": {
-                "selection_mode": (SELECTION_MODES, {
-                    "default": "highest_confidence",
-                    "tooltip": "Strategy used when selecting the best instance.",
-                }),
+                "selection_mode": (
+                    SELECTION_MODES,
+                    {
+                        "default": "highest_confidence",
+                        "tooltip": "Strategy used when selecting the best instance.",
+                    },
+                ),
             },
         }
 
@@ -1241,8 +1533,13 @@ class YOLOE26SelectBestInstance:
         instance_metadata_json: str,
         selection_mode: str = "highest_confidence",
     ):
-        mask_batch = _validate_mask_batch(instance_masks, "YOLOE-26 Select Best Instance")
-        if not isinstance(instance_metadata_json, str) or not instance_metadata_json.strip():
+        mask_batch = _validate_mask_batch(
+            instance_masks, "YOLOE-26 Select Best Instance"
+        )
+        if (
+            not isinstance(instance_metadata_json, str)
+            or not instance_metadata_json.strip()
+        ):
             raise ValueError("instance_metadata_json must be a non-empty JSON string.")
 
         try:
@@ -1259,14 +1556,20 @@ class YOLOE26SelectBestInstance:
 
         records: list[dict] = []
         for image_entry in images:
-            detections = image_entry.get("detections") if isinstance(image_entry, dict) else None
+            detections = (
+                image_entry.get("detections") if isinstance(image_entry, dict) else None
+            )
             if detections is None:
                 continue
             if not isinstance(detections, list):
-                raise ValueError("instance_metadata_json image entries must contain a detections list.")
+                raise ValueError(
+                    "instance_metadata_json image entries must contain a detections list."
+                )
             for detection in detections:
                 if not isinstance(detection, dict):
-                    raise ValueError("instance_metadata_json detections must be JSON objects.")
+                    raise ValueError(
+                        "instance_metadata_json detections must be JSON objects."
+                    )
                 if "output_mask_index" not in detection:
                     raise ValueError(
                         "instance_metadata_json must contain detections with output_mask_index values."
@@ -1274,14 +1577,20 @@ class YOLOE26SelectBestInstance:
                 output_mask_index = detection["output_mask_index"]
                 if not isinstance(output_mask_index, int):
                     raise ValueError("output_mask_index must be an integer.")
-                if output_mask_index < 0 or output_mask_index >= int(mask_batch.shape[0]):
-                    raise ValueError("output_mask_index is out of range for the provided instance_masks batch.")
+                if output_mask_index < 0 or output_mask_index >= int(
+                    mask_batch.shape[0]
+                ):
+                    raise ValueError(
+                        "output_mask_index is out of range for the provided instance_masks batch."
+                    )
                 record = dict(detection)
                 record["mask_index"] = output_mask_index
                 records.append(record)
 
         if not records:
-            empty_mask = torch.zeros((1, mask_batch.shape[1], mask_batch.shape[2]), dtype=torch.float32)
+            empty_mask = torch.zeros(
+                (1, mask_batch.shape[1], mask_batch.shape[2]), dtype=torch.float32
+            )
             return (
                 empty_mask,
                 _serialize_metadata(
@@ -1296,13 +1605,21 @@ class YOLOE26SelectBestInstance:
                 -1,
             )
 
-        mask_arrays = [mask_batch[index].numpy() for index in range(mask_batch.shape[0])]
+        mask_arrays = [
+            mask_batch[index].numpy() for index in range(mask_batch.shape[0])
+        ]
         selected_mask_index, selected_mask, selected_record = _select_best_instance(
             records, mask_arrays, selection_mode
         )
 
-        if selected_mask_index < 0 or selected_record is None or selected_mask.size == 0:
-            empty_mask = torch.zeros((1, mask_batch.shape[1], mask_batch.shape[2]), dtype=torch.float32)
+        if (
+            selected_mask_index < 0
+            or selected_record is None
+            or selected_mask.size == 0
+        ):
+            empty_mask = torch.zeros(
+                (1, mask_batch.shape[1], mask_batch.shape[2]), dtype=torch.float32
+            )
             return (
                 empty_mask,
                 _serialize_metadata(
@@ -1318,7 +1635,9 @@ class YOLOE26SelectBestInstance:
             )
 
         selected_mask_batch = torch.from_numpy(selected_mask).unsqueeze(0)
-        selected_output_mask_index = int(selected_record.get("output_mask_index", selected_mask_index))
+        selected_output_mask_index = int(
+            selected_record.get("output_mask_index", selected_mask_index)
+        )
         return (
             selected_mask_batch,
             _serialize_metadata(

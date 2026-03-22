@@ -9,7 +9,7 @@ This is a ComfyUI custom node pack, not a standalone application.
 - Usable **beta / release candidate**
 - Helper / node-level tests are passing
 - Real ComfyUI smoke / integration validation is still recommended before wider public release
-- **Local model files only**; automatic downloads are intentionally disabled
+- **Local-first model loading**; automatic download is optional, disabled by default, and downloaded and verified against an allowlisted SHA256 digest
 
 ## What this node pack adds
 
@@ -54,6 +54,8 @@ This node pack expects the host ComfyUI environment to already provide compatibl
 Only `ultralytics` is listed in `requirements.txt` to reduce the chance of conflicting with the host environment.
 
 ### 2. Place a local YOLOE-26 model
+
+The loader is local-first. Put your `.pt` file in one of these supported locations, or enable `auto_download` in the loader node if you want Ultralytics to try downloading a missing official weight automatically. Auto-download is currently allowlisted for official YOLOE-26 segmentation weights `yoloe-26n-seg.pt`, `yoloe-26s-seg.pt`, `yoloe-26m-seg.pt`, `yoloe-26l-seg.pt`, and `yoloe-26x-seg.pt`, and the checkpoint is first downloaded to a local path, then verified against a pinned SHA256 digest, and only then loaded.
 
 Put your `.pt` file in one of these supported locations:
 
@@ -153,6 +155,7 @@ Only load `.pt` files you trust.
 **Inputs**
 - `model_name`: local weight file name, for example `yoloe-26s-seg.pt`
 - `device`: `auto`, `cpu`, `cuda`, `cuda:N`, and `mps` when available
+- `auto_download`: when `true`, download an allowlisted official model to a local path, verify its SHA256 digest, and then load it; currently allowlisted for `yoloe-26n-seg.pt`, `yoloe-26s-seg.pt`, `yoloe-26m-seg.pt`, `yoloe-26l-seg.pt`, and `yoloe-26x-seg.pt`
 
 **Outputs**
 - `YOLOE_MODEL`
@@ -332,8 +335,8 @@ For practical setup, smoke testing, and release checks, see:
 
 ## Current limitations
 
-- The loader accepts only local `.pt` model files in supported ComfyUI model directories
-- No automatic model download in this initial release
+- The loader still accepts only `.pt` model names and local-first resolution from supported ComfyUI model directories
+- Automatic model download depends on Ultralytics upstream model availability, network access, local write permissions, the current allowlist of approved official model names, and successful SHA256 verification of the downloaded checkpoint
 - Metadata outputs are JSON strings rather than a custom ComfyUI structured type
 - `YOLOE-26 Instance Masks` returns a placeholder zero mask when no detections are found and reports `count = 0`
 - `YOLOE-26 Class Masks` always returns one mask per prompt class for each input image; masks are all-zero when a class is not detected
@@ -342,6 +345,7 @@ For practical setup, smoke testing, and release checks, see:
 ## Troubleshooting
 
 - If model loading fails, verify the `.pt` file is placed in one of the supported ComfyUI model directories.
+- If `auto_download` is enabled and loading still fails, verify that Ultralytics can reach its model source and that the environment can write downloaded weights to its cache directory.
 - If inference fails after upgrading Ultralytics, verify that your installed version still exposes `from ultralytics import YOLOE`.
 - This node pack currently targets the `ultralytics>=8.3.200` API family and may require updates if upstream YOLOE APIs change.
 - If you only need the mask, you can ignore the JSON outputs.

@@ -3,13 +3,16 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import torch
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "nodes.py"
-WORKFLOW_PATH = Path(__file__).resolve().parents[1] / "examples" / "basic_api_workflow.json"
+WORKFLOW_PATH = (
+    Path(__file__).resolve().parents[1] / "examples" / "basic_api_workflow.json"
+)
 spec = importlib.util.spec_from_file_location("comfyui_yoloe26_nodes", MODULE_PATH)
 nodes = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = nodes
@@ -35,7 +38,11 @@ class FakeResult:
     def __init__(self, masks=None, boxes=None, plot_image=None):
         self.masks = masks
         self.boxes = boxes
-        self._plot_image = plot_image if plot_image is not None else np.zeros((2, 2, 3), dtype=np.uint8)
+        self._plot_image = (
+            plot_image
+            if plot_image is not None
+            else np.zeros((2, 2, 3), dtype=np.uint8)
+        )
 
     def plot(self, **kwargs):
         return self._plot_image.copy()
@@ -58,8 +65,196 @@ class FakeModel:
 
 
 class TestNodesHelpers(unittest.TestCase):
+    def test_load_model_input_types_exposes_auto_download_toggle(self):
+        input_types = nodes.YOLOE26LoadModel.INPUT_TYPES()
+        self.assertIn("auto_download", input_types["optional"])
+        auto_download_type, auto_download_config = input_types["optional"][
+            "auto_download"
+        ]
+        self.assertEqual(auto_download_type, "BOOLEAN")
+        self.assertFalse(auto_download_config["default"])
+
+    def test_load_model_raises_file_not_found_when_model_missing_and_auto_download_disabled(
+        self,
+    ):
+        with patch.object(
+            nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
+        ) as mock_resolve:
+            with patch.object(nodes, "_create_yoloe") as mock_create:
+                with self.assertRaises(FileNotFoundError):
+                    nodes.YOLOE26LoadModel().load_model(
+                        "yoloe-26s-seg.pt", auto_download=False
+                    )
+
+        mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
+        mock_create.assert_not_called()
+
+    def test_load_model_downloads_missing_model_when_auto_download_enabled(self):
+        runtime_model = FakeModel([])
+
+        with patch.object(
+            nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
+        ) as mock_resolve:
+            with patch.object(
+                nodes,
+                "_download_auto_download_model",
+                return_value="L:/downloaded/yoloe-26s-seg.pt",
+            ) as mock_download:
+                with patch.object(
+                    nodes, "_verify_auto_downloaded_model"
+                ) as mock_verify:
+                    with patch.object(
+                        nodes, "_create_yoloe", return_value=runtime_model
+                    ) as mock_create:
+                        (bundle,) = nodes.YOLOE26LoadModel().load_model(
+                            "yoloe-26s-seg.pt", auto_download=True
+                        )
+
+        mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
+        mock_download.assert_called_once_with("yoloe-26s-seg.pt")
+        mock_verify.assert_called_once_with(
+            "yoloe-26s-seg.pt", "L:/downloaded/yoloe-26s-seg.pt"
+        )
+        mock_create.assert_called_once_with("L:/downloaded/yoloe-26s-seg.pt")
+        self.assertIs(bundle["model"], runtime_model)
+        self.assertEqual(bundle["model_path"], "L:/downloaded/yoloe-26s-seg.pt")
+        self.assertEqual(bundle["device"], "auto")
+
+    def test_load_model_does_not_download_when_model_already_exists_even_if_auto_download_enabled(
+        self,
+    ):
+        runtime_model = FakeModel([])
+
+        with patch.object(
+            nodes, "_resolve_model_path", return_value="L:/models/yoloe-26s-seg.pt"
+        ) as mock_resolve:
+            with patch.object(
+                nodes, "_create_yoloe", return_value=runtime_model
+            ) as mock_create:
+                (bundle,) = nodes.YOLOE26LoadModel().load_model(
+                    "yoloe-26s-seg.pt", auto_download=True
+                )
+
+        mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
+        mock_create.assert_called_once_with("L:/models/yoloe-26s-seg.pt")
+        self.assertEqual(bundle["model_path"], "L:/models/yoloe-26s-seg.pt")
+
+    def test_load_model_raises_runtime_error_when_auto_download_fails(self):
+        with patch.object(
+            nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
+        ) as mock_resolve:
+            with patch.object(
+                nodes,
+                "_download_auto_download_model",
+                side_effect=RuntimeError("network disabled"),
+            ) as mock_download:
+                with self.assertRaises(RuntimeError) as exc:
+                    nodes.YOLOE26LoadModel().load_model(
+                        "yoloe-26s-seg.pt", auto_download=True
+                    )
+
+        mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
+        mock_download.assert_called_once_with("yoloe-26s-seg.pt")
+        self.assertIn("auto-download", str(exc.exception))
+        self.assertIn("yoloe-26s-seg.pt", str(exc.exception))
+
+    def test_load_model_raises_runtime_error_when_local_model_validation_fails(self):
+        with patch.object(
+            nodes, "_resolve_model_path", return_value="L:/models/yoloe-26s-seg.pt"
+        ) as mock_resolve:
+            with patch.object(
+                nodes,
+                "_create_yoloe",
+                side_effect=FileNotFoundError("weights corrupted"),
+            ) as mock_create:
+                with self.assertRaises(RuntimeError) as exc:
+                    nodes.YOLOE26LoadModel().load_model(
+                        "yoloe-26s-seg.pt", auto_download=True
+                    )
+
+        mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
+        mock_create.assert_called_once_with("L:/models/yoloe-26s-seg.pt")
+        self.assertIn("Failed to validate YOLOE-26 model", str(exc.exception))
+
+    def test_load_model_accepts_other_allowlisted_official_model_names(self):
+        runtime_model = FakeModel([])
+
+        with patch.object(
+            nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
+        ) as mock_resolve:
+            with patch.object(
+                nodes,
+                "_download_auto_download_model",
+                return_value="L:/downloaded/yoloe-26m-seg.pt",
+            ) as mock_download:
+                with patch.object(
+                    nodes, "_verify_auto_downloaded_model"
+                ) as mock_verify:
+                    with patch.object(
+                        nodes, "_create_yoloe", return_value=runtime_model
+                    ) as mock_create:
+                        (bundle,) = nodes.YOLOE26LoadModel().load_model(
+                            "yoloe-26m-seg.pt", auto_download=True
+                        )
+
+        mock_resolve.assert_called_once_with("yoloe-26m-seg.pt")
+        mock_download.assert_called_once_with("yoloe-26m-seg.pt")
+        mock_verify.assert_called_once_with(
+            "yoloe-26m-seg.pt", "L:/downloaded/yoloe-26m-seg.pt"
+        )
+        mock_create.assert_called_once_with("L:/downloaded/yoloe-26m-seg.pt")
+        self.assertEqual(bundle["model_path"], "L:/downloaded/yoloe-26m-seg.pt")
+
+    def test_load_model_rejects_auto_download_for_unapproved_model_name(self):
+        with patch.object(
+            nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
+        ) as mock_resolve:
+            with patch.object(nodes, "_create_yoloe") as mock_create:
+                with self.assertRaises(ValueError) as exc:
+                    nodes.YOLOE26LoadModel().load_model(
+                        "custom-seg.pt", auto_download=True
+                    )
+
+        mock_resolve.assert_called_once_with("custom-seg.pt")
+        mock_create.assert_not_called()
+        self.assertIn("Auto-download is only supported", str(exc.exception))
+
+    def test_load_model_does_not_create_runtime_model_before_digest_verification(self):
+        with patch.object(
+            nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
+        ):
+            with patch.object(
+                nodes,
+                "_download_auto_download_model",
+                return_value="L:/downloaded/yoloe-26s-seg.pt",
+            ):
+                with patch.object(
+                    nodes,
+                    "_verify_auto_downloaded_model",
+                    side_effect=RuntimeError("digest mismatch"),
+                ):
+                    with patch.object(nodes, "_create_yoloe") as mock_create:
+                        with self.assertRaises(RuntimeError) as exc:
+                            nodes.YOLOE26LoadModel().load_model(
+                                "yoloe-26s-seg.pt", auto_download=True
+                            )
+
+        mock_create.assert_not_called()
+        self.assertIn("auto-download", str(exc.exception))
+
+    def test_verify_auto_downloaded_model_rejects_digest_mismatch(self):
+        with patch.object(nodes, "_sha256_file", return_value="deadbeef"):
+            with self.assertRaises(RuntimeError) as exc:
+                nodes._verify_auto_downloaded_model(
+                    "yoloe-26s-seg.pt", "L:/downloaded/yoloe-26s-seg.pt"
+                )
+
+        self.assertIn("failed SHA256 verification", str(exc.exception))
+
     def test_parse_classes_splits_and_trims(self):
-        self.assertEqual(nodes._parse_classes("person, car , dog"), ["person", "car", "dog"])
+        self.assertEqual(
+            nodes._parse_classes("person, car , dog"), ["person", "car", "dog"]
+        )
 
     def test_build_predict_kwargs_includes_device_only_when_not_auto(self):
         auto_kwargs = nodes._build_predict_kwargs("auto", 0.25, 640, 0.7, 300)
@@ -105,7 +300,11 @@ class TestNodesHelpers(unittest.TestCase):
 
         with self.assertRaises(ValueError) as exc:
             nodes._validate_model_bundle(
-                {"model": PredictOnlyModel(), "model_path": "L:/models/yoloe-26s-seg.pt", "device": "auto"}
+                {
+                    "model": PredictOnlyModel(),
+                    "model_path": "L:/models/yoloe-26s-seg.pt",
+                    "device": "auto",
+                }
             )
         self.assertIn("set_classes", str(exc.exception))
 
@@ -115,19 +314,29 @@ class TestNodesHelpers(unittest.TestCase):
 
         with self.assertRaises(ValueError) as exc:
             nodes._validate_model_bundle(
-                {"model": SetClassesOnlyModel(), "model_path": "L:/models/yoloe-26s-seg.pt", "device": "auto"}
+                {
+                    "model": SetClassesOnlyModel(),
+                    "model_path": "L:/models/yoloe-26s-seg.pt",
+                    "device": "auto",
+                }
             )
         self.assertIn("predict", str(exc.exception))
 
     def test_validate_image_batch_rejects_invalid_shapes(self):
         with self.assertRaises(ValueError):
-            nodes._validate_image_batch(torch.zeros((2, 2, 3), dtype=torch.float32), "Test Node")
+            nodes._validate_image_batch(
+                torch.zeros((2, 2, 3), dtype=torch.float32), "Test Node"
+            )
 
         with self.assertRaises(ValueError):
-            nodes._validate_image_batch(torch.zeros((1, 2, 2, 1), dtype=torch.float32), "Test Node")
+            nodes._validate_image_batch(
+                torch.zeros((1, 2, 2, 1), dtype=torch.float32), "Test Node"
+            )
 
     def test_extract_detection_records_returns_empty_for_missing_boxes(self):
-        records = nodes._extract_detection_records(FakeResult(masks=None, boxes=None), ["person"], 2, 2, 0)
+        records = nodes._extract_detection_records(
+            FakeResult(masks=None, boxes=None), ["person"], 2, 2, 0
+        )
         self.assertEqual(records, [])
 
     def test_build_binary_mask_merges_instances(self):
@@ -146,9 +355,11 @@ class TestNodesHelpers(unittest.TestCase):
 
     def test_build_binary_mask_rejects_invalid_mask_threshold(self):
         result = FakeResult(
-            masks=FakeMasks([
-                torch.tensor([[0.9, 0.1], [0.0, 0.0]], dtype=torch.float32),
-            ])
+            masks=FakeMasks(
+                [
+                    torch.tensor([[0.9, 0.1], [0.0, 0.0]], dtype=torch.float32),
+                ]
+            )
         )
 
         with self.assertRaises(ValueError):
@@ -156,9 +367,11 @@ class TestNodesHelpers(unittest.TestCase):
 
     def test_build_per_instance_masks_rejects_invalid_mask_threshold(self):
         result = FakeResult(
-            masks=FakeMasks([
-                torch.tensor([[0.9, 0.1], [0.0, 0.0]], dtype=torch.float32),
-            ])
+            masks=FakeMasks(
+                [
+                    torch.tensor([[0.9, 0.1], [0.0, 0.0]], dtype=torch.float32),
+                ]
+            )
         )
 
         with self.assertRaises(ValueError):
@@ -182,10 +395,18 @@ class TestNodesHelpers(unittest.TestCase):
                 )
             ]
         )
-        bundle = {"model": fake_model, "model_path": "L:/models/yoloe-26s-seg.pt", "device": "auto"}
+        bundle = {
+            "model": fake_model,
+            "model_path": "L:/models/yoloe-26s-seg.pt",
+            "device": "auto",
+        }
         image = torch.zeros((1, 2, 2, 3), dtype=torch.float32)
 
-        annotated_batch, mask_batch, detection_count = nodes.YOLOE26PromptSegment().segment(
+        (
+            annotated_batch,
+            mask_batch,
+            detection_count,
+        ) = nodes.YOLOE26PromptSegment().segment(
             bundle,
             image,
             "person",
@@ -199,20 +420,34 @@ class TestNodesHelpers(unittest.TestCase):
         self.assertEqual(detection_count, 1)
         self.assertEqual(tuple(annotated_batch.shape), (1, 2, 2, 3))
         self.assertEqual(tuple(mask_batch.shape), (1, 2, 2))
-        self.assertTrue(np.array_equal(mask_batch[0].numpy(), np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)))
-        self.assertTrue(torch.allclose(annotated_batch[0], torch.ones((2, 2, 3), dtype=torch.float32)))
+        self.assertTrue(
+            np.array_equal(
+                mask_batch[0].numpy(),
+                np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+            )
+        )
+        self.assertTrue(
+            torch.allclose(
+                annotated_batch[0], torch.ones((2, 2, 3), dtype=torch.float32)
+            )
+        )
         self.assertEqual(fake_model.predict_history[0]["iou"], 0.4)
         self.assertEqual(fake_model.predict_history[0]["max_det"], 7)
         self.assertNotIn("device", fake_model.predict_history[0])
 
     def test_extract_detection_records_returns_structured_metadata(self):
         result = FakeResult(
-            masks=FakeMasks([
-                torch.tensor([[0.0, 1.0], [0.0, 1.0]], dtype=torch.float32),
-                torch.tensor([[1.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
-            ]),
+            masks=FakeMasks(
+                [
+                    torch.tensor([[0.0, 1.0], [0.0, 1.0]], dtype=torch.float32),
+                    torch.tensor([[1.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
+                ]
+            ),
             boxes=FakeBoxes(
-                xyxy=torch.tensor([[1.0, 2.0, 11.0, 12.0], [3.0, 4.0, 13.0, 14.0]], dtype=torch.float32),
+                xyxy=torch.tensor(
+                    [[1.0, 2.0, 11.0, 12.0], [3.0, 4.0, 13.0, 14.0]],
+                    dtype=torch.float32,
+                ),
                 cls=torch.tensor([0, 1], dtype=torch.float32),
                 conf=torch.tensor([0.9, 0.75], dtype=torch.float32),
             ),
@@ -274,9 +509,11 @@ class TestNodesHelpers(unittest.TestCase):
         fake_model = FakeModel(
             [
                 FakeResult(
-                    masks=FakeMasks([
-                        torch.tensor([[1.0, 0.0], [0.0, 0.0]], dtype=torch.float32),
-                    ]),
+                    masks=FakeMasks(
+                        [
+                            torch.tensor([[1.0, 0.0], [0.0, 0.0]], dtype=torch.float32),
+                        ]
+                    ),
                     boxes=FakeBoxes(
                         xyxy=torch.tensor([[1.0, 2.0, 3.0, 4.0]], dtype=torch.float32),
                         cls=torch.tensor([0], dtype=torch.float32),
@@ -285,11 +522,15 @@ class TestNodesHelpers(unittest.TestCase):
                 )
             ]
         )
-        bundle = {"model": fake_model, "model_path": "L:/models/yoloe-26s-seg.pt", "device": "auto"}
+        bundle = {
+            "model": fake_model,
+            "model_path": "L:/models/yoloe-26s-seg.pt",
+            "device": "auto",
+        }
         image = torch.zeros((1, 2, 2, 3), dtype=torch.float32)
 
-        metadata_json, detection_count = nodes.YOLOE26DetectionMetadata().detect_metadata(
-            bundle, image, "person"
+        metadata_json, detection_count = (
+            nodes.YOLOE26DetectionMetadata().detect_metadata(bundle, image, "person")
         )
 
         payload = json.loads(metadata_json)
@@ -303,11 +544,15 @@ class TestNodesHelpers(unittest.TestCase):
 
     def test_instance_masks_node_returns_zero_placeholder_when_empty(self):
         fake_model = FakeModel([FakeResult(masks=FakeMasks([]), boxes=None)])
-        bundle = {"model": fake_model, "model_path": "L:/models/yoloe-26s-seg.pt", "device": "auto"}
+        bundle = {
+            "model": fake_model,
+            "model_path": "L:/models/yoloe-26s-seg.pt",
+            "device": "auto",
+        }
         image = torch.zeros((1, 2, 2, 3), dtype=torch.float32)
 
-        mask_batch, metadata_json, count = nodes.YOLOE26InstanceMasks().segment_instances(
-            bundle, image, "person"
+        mask_batch, metadata_json, count = (
+            nodes.YOLOE26InstanceMasks().segment_instances(bundle, image, "person")
         )
 
         payload = json.loads(metadata_json)
@@ -327,28 +572,49 @@ class TestNodesHelpers(unittest.TestCase):
                         ]
                     ),
                     boxes=FakeBoxes(
-                        xyxy=torch.tensor([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]], dtype=torch.float32),
+                        xyxy=torch.tensor(
+                            [[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]],
+                            dtype=torch.float32,
+                        ),
                         cls=torch.tensor([0, 1], dtype=torch.float32),
                         conf=torch.tensor([0.9, 0.8], dtype=torch.float32),
                     ),
                 ),
                 FakeResult(
-                    masks=FakeMasks([
-                        torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
-                    ]),
+                    masks=FakeMasks(
+                        [
+                            torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
+                        ]
+                    ),
                     boxes=FakeBoxes(
-                        xyxy=torch.tensor([[9.0, 10.0, 11.0, 12.0]], dtype=torch.float32),
+                        xyxy=torch.tensor(
+                            [[9.0, 10.0, 11.0, 12.0]], dtype=torch.float32
+                        ),
                         cls=torch.tensor([0], dtype=torch.float32),
                         conf=torch.tensor([0.7], dtype=torch.float32),
                     ),
                 ),
             ]
         )
-        bundle = {"model": fake_model, "model_path": "L:/models/yoloe-26s-seg.pt", "device": "auto"}
+        bundle = {
+            "model": fake_model,
+            "model_path": "L:/models/yoloe-26s-seg.pt",
+            "device": "auto",
+        }
         image = torch.zeros((2, 2, 2, 3), dtype=torch.float32)
 
-        mask_batch, metadata_json, count = nodes.YOLOE26InstanceMasks().segment_instances(
-            bundle, image, "person,car", iou=0.6, max_det=5, mask_threshold=0.5, imgsz=640
+        (
+            mask_batch,
+            metadata_json,
+            count,
+        ) = nodes.YOLOE26InstanceMasks().segment_instances(
+            bundle,
+            image,
+            "person,car",
+            iou=0.6,
+            max_det=5,
+            mask_threshold=0.5,
+            imgsz=640,
         )
 
         payload = json.loads(metadata_json)
@@ -369,13 +635,19 @@ class TestNodesHelpers(unittest.TestCase):
         self.assertEqual(fake_model.predict_history[0]["max_det"], 5)
         self.assertNotIn("device", fake_model.predict_history[0])
 
-    def test_class_masks_node_returns_zero_masks_for_each_class_when_no_detections(self):
+    def test_class_masks_node_returns_zero_masks_for_each_class_when_no_detections(
+        self,
+    ):
         fake_model = FakeModel([FakeResult(masks=FakeMasks([]), boxes=None)])
-        bundle = {"model": fake_model, "model_path": "L:/models/yoloe-26s-seg.pt", "device": "auto"}
+        bundle = {
+            "model": fake_model,
+            "model_path": "L:/models/yoloe-26s-seg.pt",
+            "device": "auto",
+        }
         image = torch.zeros((1, 2, 2, 3), dtype=torch.float32)
 
-        mask_batch, metadata_json, output_mask_count = nodes.YOLOE26ClassMasks().segment_class_masks(
-            bundle, image, "person,car"
+        mask_batch, metadata_json, output_mask_count = (
+            nodes.YOLOE26ClassMasks().segment_class_masks(bundle, image, "person,car")
         )
 
         payload = json.loads(metadata_json)
@@ -388,8 +660,12 @@ class TestNodesHelpers(unittest.TestCase):
         self.assertEqual(payload["entries"][1]["source_instance_count"], 0)
         self.assertEqual(payload["entries"][0]["source_instance_indices"], [])
         self.assertEqual(payload["entries"][1]["source_instance_indices"], [])
-        self.assertTrue(torch.equal(mask_batch[0], torch.zeros((2, 2), dtype=torch.float32)))
-        self.assertTrue(torch.equal(mask_batch[1], torch.zeros((2, 2), dtype=torch.float32)))
+        self.assertTrue(
+            torch.equal(mask_batch[0], torch.zeros((2, 2), dtype=torch.float32))
+        )
+        self.assertTrue(
+            torch.equal(mask_batch[1], torch.zeros((2, 2), dtype=torch.float32))
+        )
         self.assertNotIn("device", fake_model.predict_history[0])
 
     def test_class_masks_node_merges_instances_per_class(self):
@@ -405,7 +681,11 @@ class TestNodesHelpers(unittest.TestCase):
                     ),
                     boxes=FakeBoxes(
                         xyxy=torch.tensor(
-                            [[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0], [9.0, 10.0, 11.0, 12.0]],
+                            [
+                                [1.0, 2.0, 3.0, 4.0],
+                                [5.0, 6.0, 7.0, 8.0],
+                                [9.0, 10.0, 11.0, 12.0],
+                            ],
                             dtype=torch.float32,
                         ),
                         cls=torch.tensor([0, 0, 1], dtype=torch.float32),
@@ -414,11 +694,25 @@ class TestNodesHelpers(unittest.TestCase):
                 )
             ]
         )
-        bundle = {"model": fake_model, "model_path": "L:/models/yoloe-26s-seg.pt", "device": "auto"}
+        bundle = {
+            "model": fake_model,
+            "model_path": "L:/models/yoloe-26s-seg.pt",
+            "device": "auto",
+        }
         image = torch.zeros((1, 2, 2, 3), dtype=torch.float32)
 
-        mask_batch, metadata_json, output_mask_count = nodes.YOLOE26ClassMasks().segment_class_masks(
-            bundle, image, "person,car", iou=0.65, max_det=9, mask_threshold=0.5, imgsz=640
+        (
+            mask_batch,
+            metadata_json,
+            output_mask_count,
+        ) = nodes.YOLOE26ClassMasks().segment_class_masks(
+            bundle,
+            image,
+            "person,car",
+            iou=0.65,
+            max_det=9,
+            mask_threshold=0.5,
+            imgsz=640,
         )
 
         payload = json.loads(metadata_json)
@@ -433,14 +727,26 @@ class TestNodesHelpers(unittest.TestCase):
         self.assertEqual(payload["entries"][1]["class_name"], "car")
         self.assertEqual(payload["entries"][1]["source_instance_indices"], [2])
         self.assertEqual(payload["entries"][1]["source_instance_count"], 1)
-        self.assertTrue(torch.equal(mask_batch[0], torch.tensor([[1.0, 1.0], [0.0, 0.0]], dtype=torch.float32)))
-        self.assertTrue(torch.equal(mask_batch[1], torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32)))
+        self.assertTrue(
+            torch.equal(
+                mask_batch[0],
+                torch.tensor([[1.0, 1.0], [0.0, 0.0]], dtype=torch.float32),
+            )
+        )
+        self.assertTrue(
+            torch.equal(
+                mask_batch[1],
+                torch.tensor([[0.0, 0.0], [1.0, 0.0]], dtype=torch.float32),
+            )
+        )
         self.assertNotIn("device", fake_model.predict_history[0])
         self.assertEqual(fake_model.predict_history[0]["iou"], 0.65)
         self.assertEqual(fake_model.predict_history[0]["max_det"], 9)
 
     def test_fill_holes_preserves_border_touching_foreground(self):
-        mask = np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32)
+        mask = np.array(
+            [[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32
+        )
         filled = nodes._fill_holes(mask)
         self.assertTrue(np.array_equal(filled, mask))
 
@@ -454,7 +760,11 @@ class TestNodesHelpers(unittest.TestCase):
         )
         metadata_json = json.dumps({"version": 1, "total_instances": 2})
 
-        refined_masks, refined_metadata_json, count = nodes.YOLOE26RefineMask().refine_mask_batch(
+        (
+            refined_masks,
+            refined_metadata_json,
+            count,
+        ) = nodes.YOLOE26RefineMask().refine_mask_batch(
             masks,
             method="largest_component",
             kernel_size=3,
@@ -469,7 +779,10 @@ class TestNodesHelpers(unittest.TestCase):
         self.assertTrue(
             torch.equal(
                 refined_masks[0],
-                torch.tensor([[1.0, 1.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=torch.float32),
+                torch.tensor(
+                    [[1.0, 1.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+                    dtype=torch.float32,
+                ),
             )
         )
         self.assertEqual(payload["version"], 1)
@@ -479,7 +792,11 @@ class TestNodesHelpers(unittest.TestCase):
     def test_refine_mask_node_applies_min_area_to_threshold_method(self):
         masks = torch.tensor([[[1.0, 0.0], [0.0, 0.0]]], dtype=torch.float32)
 
-        refined_masks, refined_metadata_json, count = nodes.YOLOE26RefineMask().refine_mask_batch(
+        (
+            refined_masks,
+            refined_metadata_json,
+            count,
+        ) = nodes.YOLOE26RefineMask().refine_mask_batch(
             masks,
             method="threshold",
             min_area=2,
@@ -488,7 +805,9 @@ class TestNodesHelpers(unittest.TestCase):
         payload = json.loads(refined_metadata_json)
         self.assertEqual(count, 1)
         self.assertEqual(tuple(refined_masks.shape), (1, 2, 2))
-        self.assertTrue(torch.equal(refined_masks[0], torch.zeros((2, 2), dtype=torch.float32)))
+        self.assertTrue(
+            torch.equal(refined_masks[0], torch.zeros((2, 2), dtype=torch.float32))
+        )
         self.assertEqual(payload["refinement"]["min_area"], 2)
 
     def test_select_best_instance_node_returns_highest_confidence_mask(self):
@@ -505,15 +824,33 @@ class TestNodesHelpers(unittest.TestCase):
                 "images": [
                     {
                         "detections": [
-                            {"output_mask_index": 0, "instance_index": 0, "confidence": 0.7, "mask_area": 1, "image_height": 2, "image_width": 2},
-                            {"output_mask_index": 1, "instance_index": 1, "confidence": 0.9, "mask_area": 1, "image_height": 2, "image_width": 2},
+                            {
+                                "output_mask_index": 0,
+                                "instance_index": 0,
+                                "confidence": 0.7,
+                                "mask_area": 1,
+                                "image_height": 2,
+                                "image_width": 2,
+                            },
+                            {
+                                "output_mask_index": 1,
+                                "instance_index": 1,
+                                "confidence": 0.9,
+                                "mask_area": 1,
+                                "image_height": 2,
+                                "image_width": 2,
+                            },
                         ]
                     }
                 ],
             }
         )
 
-        best_mask, best_metadata_json, selected_mask_index = nodes.YOLOE26SelectBestInstance().select_best_instance(
+        (
+            best_mask,
+            best_metadata_json,
+            selected_mask_index,
+        ) = nodes.YOLOE26SelectBestInstance().select_best_instance(
             instance_masks,
             metadata_json,
             selection_mode="highest_confidence",
@@ -541,15 +878,33 @@ class TestNodesHelpers(unittest.TestCase):
                 "images": [
                     {
                         "detections": [
-                            {"output_mask_index": 0, "instance_index": 0, "confidence": 0.95, "mask_area": 1, "image_height": 2, "image_width": 2},
-                            {"output_mask_index": 1, "instance_index": 1, "confidence": 0.5, "mask_area": 2, "image_height": 2, "image_width": 2},
+                            {
+                                "output_mask_index": 0,
+                                "instance_index": 0,
+                                "confidence": 0.95,
+                                "mask_area": 1,
+                                "image_height": 2,
+                                "image_width": 2,
+                            },
+                            {
+                                "output_mask_index": 1,
+                                "instance_index": 1,
+                                "confidence": 0.5,
+                                "mask_area": 2,
+                                "image_height": 2,
+                                "image_width": 2,
+                            },
                         ]
                     }
                 ],
             }
         )
 
-        best_mask, best_metadata_json, selected_mask_index = nodes.YOLOE26SelectBestInstance().select_best_instance(
+        (
+            best_mask,
+            best_metadata_json,
+            selected_mask_index,
+        ) = nodes.YOLOE26SelectBestInstance().select_best_instance(
             instance_masks,
             metadata_json,
             selection_mode="largest_area",
@@ -564,14 +919,20 @@ class TestNodesHelpers(unittest.TestCase):
         with self.assertRaises(ValueError):
             nodes.YOLOE26SelectBestInstance().select_best_instance(
                 torch.zeros((1, 2, 2), dtype=torch.float32),
-                json.dumps({"version": 1, "images": [{"detections": [{"confidence": 0.9}]}]}),
+                json.dumps(
+                    {"version": 1, "images": [{"detections": [{"confidence": 0.9}]}]}
+                ),
             )
 
     def test_select_best_instance_node_returns_zero_mask_when_no_detections(self):
         instance_masks = torch.tensor([[[1.0, 0.0], [0.0, 0.0]]], dtype=torch.float32)
         metadata_json = json.dumps({"version": 1, "images": [{"detections": []}]})
 
-        best_mask, best_metadata_json, selected_mask_index = nodes.YOLOE26SelectBestInstance().select_best_instance(
+        (
+            best_mask,
+            best_metadata_json,
+            selected_mask_index,
+        ) = nodes.YOLOE26SelectBestInstance().select_best_instance(
             instance_masks,
             metadata_json,
             selection_mode="highest_confidence",
@@ -580,7 +941,9 @@ class TestNodesHelpers(unittest.TestCase):
         payload = json.loads(best_metadata_json)
         self.assertEqual(selected_mask_index, -1)
         self.assertEqual(tuple(best_mask.shape), (1, 2, 2))
-        self.assertTrue(torch.equal(best_mask[0], torch.zeros((2, 2), dtype=torch.float32)))
+        self.assertTrue(
+            torch.equal(best_mask[0], torch.zeros((2, 2), dtype=torch.float32))
+        )
         self.assertEqual(payload["candidate_count"], 0)
 
     def test_example_workflow_matches_custom_node_interfaces(self):
@@ -589,12 +952,64 @@ class TestNodesHelpers(unittest.TestCase):
         builtin_nodes = {"LoadImage"}
 
         expected_workflow_inputs = {
-            "YOLOE26PromptSegment": {"model", "image", "prompt", "conf", "iou", "max_det", "mask_threshold", "imgsz", "show_boxes", "show_labels", "show_conf", "show_masks"},
-            "YOLOE26DetectionMetadata": {"model", "image", "prompt", "conf", "iou", "max_det", "mask_threshold", "imgsz"},
-            "YOLOE26InstanceMasks": {"model", "image", "prompt", "conf", "iou", "max_det", "mask_threshold", "imgsz"},
-            "YOLOE26ClassMasks": {"model", "image", "prompt", "conf", "iou", "max_det", "mask_threshold", "imgsz"},
-            "YOLOE26RefineMask": {"masks", "method", "kernel_size", "iterations", "min_area", "metadata_json"},
-            "YOLOE26SelectBestInstance": {"instance_masks", "instance_metadata_json", "selection_mode"},
+            "YOLOE26LoadModel": {"model_name", "device", "auto_download"},
+            "YOLOE26PromptSegment": {
+                "model",
+                "image",
+                "prompt",
+                "conf",
+                "iou",
+                "max_det",
+                "mask_threshold",
+                "imgsz",
+                "show_boxes",
+                "show_labels",
+                "show_conf",
+                "show_masks",
+            },
+            "YOLOE26DetectionMetadata": {
+                "model",
+                "image",
+                "prompt",
+                "conf",
+                "iou",
+                "max_det",
+                "mask_threshold",
+                "imgsz",
+            },
+            "YOLOE26InstanceMasks": {
+                "model",
+                "image",
+                "prompt",
+                "conf",
+                "iou",
+                "max_det",
+                "mask_threshold",
+                "imgsz",
+            },
+            "YOLOE26ClassMasks": {
+                "model",
+                "image",
+                "prompt",
+                "conf",
+                "iou",
+                "max_det",
+                "mask_threshold",
+                "imgsz",
+            },
+            "YOLOE26RefineMask": {
+                "masks",
+                "method",
+                "kernel_size",
+                "iterations",
+                "min_area",
+                "metadata_json",
+            },
+            "YOLOE26SelectBestInstance": {
+                "instance_masks",
+                "instance_metadata_json",
+                "selection_mode",
+            },
         }
 
         for node_id, node_def in workflow.items():
@@ -606,12 +1021,21 @@ class TestNodesHelpers(unittest.TestCase):
 
             node_cls = custom_nodes[class_type]
             input_types = node_cls.INPUT_TYPES()
-            allowed_keys = set(input_types.get("required", {}).keys()) | set(input_types.get("optional", {}).keys())
+            allowed_keys = set(input_types.get("required", {}).keys()) | set(
+                input_types.get("optional", {}).keys()
+            )
             self.assertTrue(set(node_def["inputs"].keys()).issubset(allowed_keys))
             if class_type in expected_workflow_inputs:
-                self.assertTrue(expected_workflow_inputs[class_type].issubset(set(node_def["inputs"].keys())))
+                self.assertTrue(
+                    expected_workflow_inputs[class_type].issubset(
+                        set(node_def["inputs"].keys())
+                    )
+                )
 
-        self.assertEqual(nodes.YOLOE26RefineMask.RETURN_NAMES, ("refined_masks", "refined_metadata_json", "count"))
+        self.assertEqual(
+            nodes.YOLOE26RefineMask.RETURN_NAMES,
+            ("refined_masks", "refined_metadata_json", "count"),
+        )
         self.assertEqual(
             nodes.YOLOE26SelectBestInstance.RETURN_NAMES,
             ("best_mask", "best_instance_metadata_json", "selected_mask_index"),

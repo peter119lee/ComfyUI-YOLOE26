@@ -9,7 +9,8 @@
     "class_type": "YOLOE26LoadModel",
     "inputs": {
       "model_name": "yoloe-26s-seg.pt",
-      "device": "auto"
+      "device": "auto",
+      "auto_download": false
     }
   },
   "3": {
