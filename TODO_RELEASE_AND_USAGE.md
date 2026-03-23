@@ -23,15 +23,19 @@
 
 ## 2. 放好模型檔
 
-- [ ] 準備本機 YOLOE-26 `.pt` 權重
-- [ ] 把模型放到任一支援目錄：
+- [ ] 準備本機 YOLOE-26 `.pt` 權重，或決定要使用 allowlisted auto-download
+- [ ] 如果使用本機模型，把模型放到任一支援目錄：
   - `ComfyUI/models/ultralytics/segm/`
   - `ComfyUI/models/ultralytics/bbox/`
   - `ComfyUI/models/ultralytics/`
   - `ComfyUI/models/yoloe/`
-- [ ] 先用 README 裡的範例檔名驗證一次：
+- [ ] 如果使用 auto-download，先用 allowlisted 官方 segmentation 權重驗證一次：
+  - `yoloe-26n-seg.pt`
   - `yoloe-26s-seg.pt`
-- [ ] 確認目前只使用 **local model files**，不要期待自動下載
+  - `yoloe-26m-seg.pt`
+  - `yoloe-26l-seg.pt`
+  - `yoloe-26x-seg.pt`
+- [ ] 確認 auto-download 使用前有可用網路、可寫入權限，且下載後會通過 SHA256 驗證
 
 ---
 
@@ -78,6 +82,10 @@
 
 - [ ] 測試 `model_name` 指向存在的本機模型
 - [ ] 測試不存在的模型名稱，確認錯誤訊息可讀
+- [ ] 測試 `auto_download=false` 時，本機缺模型會正確失敗
+- [ ] 測試 `auto_download=true` 時，allowlisted 官方模型可下載、驗證並載入
+- [ ] 測試 `auto_download=true` 時，非 allowlisted 模型名稱會被拒絕
+- [ ] 測試 digest mismatch / cache 汙染時，模型不會在驗證前載入
 - [ ] 測試 `device=auto`
 - [ ] 如果有 GPU，再測：
   - [ ] `device=cuda`
@@ -208,6 +216,8 @@
 
 - [ ] 模型不存在
 - [ ] 模型檔損壞
+- [ ] auto-download 網路失敗
+- [ ] auto-download 下載成功但 SHA256 驗證失敗
 - [ ] `ultralytics` 版本不相容
 - [ ] `from ultralytics import YOLOE` 無法使用
 - [ ] prompt 為空字串
