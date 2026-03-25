@@ -14,6 +14,25 @@
     }
   },
   "3": {
+    "class_type": "YOLOE26DetectionMetadata",
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "image": [
+        "1",
+        0
+      ],
+      "prompt": "person,car",
+      "conf": 0.1,
+      "iou": 0.7,
+      "max_det": 300,
+      "mask_threshold": 0.5,
+      "imgsz": 640
+    }
+  },
+  "4": {
     "class_type": "YOLOE26PromptSegment",
     "inputs": {
       "model": [
@@ -24,7 +43,7 @@
         "1",
         0
       ],
-      "prompt": "person",
+      "prompt": "person,car",
       "conf": 0.1,
       "iou": 0.7,
       "max_det": 300,
@@ -36,11 +55,11 @@
       "show_masks": true
     }
   },
-  "4": {
+  "5": {
     "class_type": "PreviewImage",
     "inputs": {
       "images": [
-        "3",
+        "4",
         0
       ]
     }

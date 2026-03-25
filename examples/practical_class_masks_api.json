@@ -14,7 +14,7 @@
     }
   },
   "3": {
-    "class_type": "YOLOE26PromptSegment",
+    "class_type": "YOLOE26ClassMasks",
     "inputs": {
       "model": [
         "2",
@@ -24,25 +24,12 @@
         "1",
         0
       ],
-      "prompt": "person",
+      "prompt": "person,car,dog",
       "conf": 0.1,
       "iou": 0.7,
       "max_det": 300,
       "mask_threshold": 0.5,
-      "imgsz": 640,
-      "show_boxes": true,
-      "show_labels": true,
-      "show_conf": true,
-      "show_masks": true
-    }
-  },
-  "4": {
-    "class_type": "PreviewImage",
-    "inputs": {
-      "images": [
-        "3",
-        0
-      ]
+      "imgsz": 640
     }
   }
 }

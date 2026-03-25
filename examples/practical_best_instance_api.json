@@ -14,7 +14,7 @@
     }
   },
   "3": {
-    "class_type": "YOLOE26PromptSegment",
+    "class_type": "YOLOE26InstanceMasks",
     "inputs": {
       "model": [
         "2",
@@ -29,20 +29,21 @@
       "iou": 0.7,
       "max_det": 300,
       "mask_threshold": 0.5,
-      "imgsz": 640,
-      "show_boxes": true,
-      "show_labels": true,
-      "show_conf": true,
-      "show_masks": true
+      "imgsz": 640
     }
   },
   "4": {
-    "class_type": "PreviewImage",
+    "class_type": "YOLOE26SelectBestInstance",
     "inputs": {
-      "images": [
+      "instance_masks": [
         "3",
         0
-      ]
+      ],
+      "instance_metadata_json": [
+        "3",
+        1
+      ],
+      "selection_mode": "highest_confidence"
     }
   }
 }

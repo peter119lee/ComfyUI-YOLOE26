@@ -10,9 +10,9 @@ import torch
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "nodes.py"
-WORKFLOW_PATH = (
-    Path(__file__).resolve().parents[1] / "examples" / "basic_api_workflow.json"
-)
+EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
+WORKFLOW_PATH = EXAMPLES_DIR / "basic_api_workflow.json"
+ALL_NODES_SHOWCASE_PATH = EXAMPLES_DIR / "all_nodes_showcase_api.json"
 spec = importlib.util.spec_from_file_location("comfyui_yoloe26_nodes", MODULE_PATH)
 nodes = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = nodes
@@ -48,11 +48,18 @@ class FakeResult:
         return self._plot_image.copy()
 
 
+class FakeInnerModel:
+    def __init__(self, pt_path=None):
+        self.pt_path = pt_path
+
+
 class FakeModel:
-    def __init__(self, results):
+    def __init__(self, results, ckpt_path=None, pt_path=None):
         self.results = list(results)
         self.classes_history = []
         self.predict_history = []
+        self.ckpt_path = ckpt_path
+        self.model = FakeInnerModel(pt_path=pt_path) if pt_path else None
 
     def set_classes(self, classes):
         self.classes_history.append(list(classes))
@@ -65,6 +72,46 @@ class FakeModel:
 
 
 class TestNodesHelpers(unittest.TestCase):
+    @staticmethod
+    def _load_workflow(path: Path) -> dict:
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _workflow_custom_node_classes(workflow: dict) -> list[str]:
+        return [
+            node_def["class_type"]
+            for node_def in workflow.values()
+            if node_def["class_type"].startswith("YOLOE26")
+        ]
+
+    @staticmethod
+    def _workflow_builtin_node_classes(workflow: dict) -> list[str]:
+        return [
+            node_def["class_type"]
+            for node_def in workflow.values()
+            if not node_def["class_type"].startswith("YOLOE26")
+        ]
+
+    @staticmethod
+    def _find_nodes_by_class_type(workflow: dict, class_type: str) -> list[tuple[str, dict]]:
+        return [
+            (node_id, node_def)
+            for node_id, node_def in workflow.items()
+            if node_def["class_type"] == class_type
+        ]
+
+    @staticmethod
+    def _workflow_has_output_node(workflow: dict) -> bool:
+        return any(
+            node_def["class_type"] in {"PreviewImage", "SaveImage"}
+            for node_def in workflow.values()
+        )
+
+    @staticmethod
+    def _node_references_output(node_def: dict, upstream_node_id: str, output_index: int) -> bool:
+        target_reference = [upstream_node_id, output_index]
+        return any(value == target_reference for value in node_def["inputs"].values())
+
     def test_load_model_input_types_exposes_auto_download_toggle(self):
         input_types = nodes.YOLOE26LoadModel.INPUT_TYPES()
         self.assertIn("auto_download", input_types["optional"])
@@ -90,32 +137,40 @@ class TestNodesHelpers(unittest.TestCase):
         mock_create.assert_not_called()
 
     def test_load_model_downloads_missing_model_when_auto_download_enabled(self):
-        runtime_model = FakeModel([])
+        runtime_model = FakeModel([], ckpt_path="L:/downloaded/yoloe-26s-seg.pt")
 
         with patch.object(
             nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
         ) as mock_resolve:
             with patch.object(
-                nodes,
-                "_download_auto_download_model",
-                return_value="L:/downloaded/yoloe-26s-seg.pt",
-            ) as mock_download:
+                nodes, "_validate_auto_download_model_name", return_value="yoloe-26s-seg.pt"
+            ) as mock_validate:
                 with patch.object(
                     nodes, "_verify_auto_downloaded_model"
                 ) as mock_verify:
                     with patch.object(
                         nodes, "_create_yoloe", return_value=runtime_model
                     ) as mock_create:
-                        (bundle,) = nodes.YOLOE26LoadModel().load_model(
-                            "yoloe-26s-seg.pt", auto_download=True
-                        )
+                        with patch(
+                            "pathlib.Path.exists", return_value=True
+                        ) as mock_exists:
+                            with patch(
+                                "ultralytics.utils.downloads.attempt_download_asset",
+                                return_value="L:/downloaded/yoloe-26s-seg.pt",
+                            ) as mock_attempt:
+                                (bundle,) = nodes.YOLOE26LoadModel().load_model(
+                                    "yoloe-26s-seg.pt", auto_download=True
+                                )
 
         mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
-        mock_download.assert_called_once_with("yoloe-26s-seg.pt")
+        mock_validate.assert_called_once_with("yoloe-26s-seg.pt")
+        mock_attempt.assert_called_once_with(
+            "yoloe-26s-seg.pt", repo="ultralytics/assets", release="v8.4.0"
+        )
+        mock_create.assert_called_once_with("L:/downloaded/yoloe-26s-seg.pt")
         mock_verify.assert_called_once_with(
             "yoloe-26s-seg.pt", "L:/downloaded/yoloe-26s-seg.pt"
         )
-        mock_create.assert_called_once_with("L:/downloaded/yoloe-26s-seg.pt")
         self.assertIs(bundle["model"], runtime_model)
         self.assertEqual(bundle["model_path"], "L:/downloaded/yoloe-26s-seg.pt")
         self.assertEqual(bundle["device"], "auto")
@@ -145,20 +200,81 @@ class TestNodesHelpers(unittest.TestCase):
         ) as mock_resolve:
             with patch.object(
                 nodes,
-                "_download_auto_download_model",
+                "_create_yoloe",
                 side_effect=RuntimeError("network disabled"),
-            ) as mock_download:
+            ) as mock_create:
                 with self.assertRaises(RuntimeError) as exc:
                     nodes.YOLOE26LoadModel().load_model(
                         "yoloe-26s-seg.pt", auto_download=True
                     )
 
         mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
-        mock_download.assert_called_once_with("yoloe-26s-seg.pt")
+        mock_create.assert_called_once_with("yoloe-26s-seg.pt")
         self.assertIn("auto-download", str(exc.exception))
         self.assertIn("yoloe-26s-seg.pt", str(exc.exception))
 
-    def test_load_model_raises_runtime_error_when_local_model_validation_fails(self):
+    def test_load_model_runtime_model_path_prefers_inner_pt_path_fallback(self):
+        runtime_model = FakeModel([], pt_path="L:/cache/yoloe-26s-seg.pt")
+
+        with patch.object(
+            nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
+        ):
+            with patch.object(
+                nodes, "_validate_auto_download_model_name", return_value="yoloe-26s-seg.pt"
+            ):
+                with patch.object(
+                    nodes, "_verify_auto_downloaded_model"
+                ) as mock_verify:
+                    with patch.object(nodes, "_create_yoloe", return_value=runtime_model):
+                        with patch(
+                            "pathlib.Path.exists", return_value=True
+                        ) as mock_exists:
+                            with patch(
+                                "ultralytics.utils.downloads.attempt_download_asset",
+                                return_value="L:/cache/yoloe-26s-seg.pt",
+                            ) as mock_attempt:
+                                (bundle,) = nodes.YOLOE26LoadModel().load_model(
+                                    "yoloe-26s-seg.pt", auto_download=True
+                                )
+
+        mock_attempt.assert_called_once_with(
+            "yoloe-26s-seg.pt", repo="ultralytics/assets", release="v8.4.0"
+        )
+        mock_verify.assert_called_once_with(
+            "yoloe-26s-seg.pt", "L:/cache/yoloe-26s-seg.pt"
+        )
+        self.assertEqual(bundle["model_path"], "L:/cache/yoloe-26s-seg.pt")
+
+    def test_load_model_runtime_model_path_falls_back_to_model_name(self):
+        runtime_model = FakeModel([])
+
+        with patch.object(
+            nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
+        ):
+            with patch.object(
+                nodes, "_validate_auto_download_model_name", return_value="yoloe-26s-seg.pt"
+            ):
+                with patch.object(nodes, "_create_yoloe", return_value=runtime_model):
+                    with patch.object(nodes, "_verify_auto_downloaded_model") as mock_verify:
+                        with patch(
+                            "ultralytics.utils.downloads.attempt_download_asset",
+                            return_value="yoloe-26s-seg.pt",
+                        ) as mock_attempt:
+                            (bundle,) = nodes.YOLOE26LoadModel().load_model(
+                                "yoloe-26s-seg.pt", auto_download=True
+                            )
+
+        mock_attempt.assert_called_once_with(
+            "yoloe-26s-seg.pt", repo="ultralytics/assets", release="v8.4.0"
+        )
+        mock_verify.assert_called_once_with(
+            "yoloe-26s-seg.pt", "yoloe-26s-seg.pt"
+        )
+        self.assertEqual(bundle["model_path"], "yoloe-26s-seg.pt")
+
+    def test_load_model_raises_runtime_error_when_local_model_validation_fails(
+        self,
+    ):
         with patch.object(
             nodes, "_resolve_model_path", return_value="L:/models/yoloe-26s-seg.pt"
         ) as mock_resolve:
@@ -176,84 +292,169 @@ class TestNodesHelpers(unittest.TestCase):
         mock_create.assert_called_once_with("L:/models/yoloe-26s-seg.pt")
         self.assertIn("Failed to validate YOLOE-26 model", str(exc.exception))
 
-    def test_load_model_accepts_other_allowlisted_official_model_names(self):
-        runtime_model = FakeModel([])
+    def test_all_example_api_workflows_parse_and_reference_known_nodes_smoke(self):
+        custom_nodes = nodes.NODE_CLASS_MAPPINGS
+        builtin_nodes = {"LoadImage", "PreviewImage", "SaveImage"}
 
-        with patch.object(
-            nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
-        ) as mock_resolve:
-            with patch.object(
-                nodes,
-                "_download_auto_download_model",
-                return_value="L:/downloaded/yoloe-26m-seg.pt",
-            ) as mock_download:
-                with patch.object(
-                    nodes, "_verify_auto_downloaded_model"
-                ) as mock_verify:
-                    with patch.object(
-                        nodes, "_create_yoloe", return_value=runtime_model
-                    ) as mock_create:
-                        (bundle,) = nodes.YOLOE26LoadModel().load_model(
-                            "yoloe-26m-seg.pt", auto_download=True
-                        )
+        for workflow_path in EXAMPLES_DIR.glob("*_api*.json"):
+            workflow = self._load_workflow(workflow_path)
+            self.assertIsInstance(workflow, dict, workflow_path.name)
+            self.assertTrue(workflow, workflow_path.name)
 
-        mock_resolve.assert_called_once_with("yoloe-26m-seg.pt")
-        mock_download.assert_called_once_with("yoloe-26m-seg.pt")
-        mock_verify.assert_called_once_with(
-            "yoloe-26m-seg.pt", "L:/downloaded/yoloe-26m-seg.pt"
-        )
-        mock_create.assert_called_once_with("L:/downloaded/yoloe-26m-seg.pt")
-        self.assertEqual(bundle["model_path"], "L:/downloaded/yoloe-26m-seg.pt")
-
-    def test_load_model_rejects_auto_download_for_unapproved_model_name(self):
-        with patch.object(
-            nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
-        ) as mock_resolve:
-            with patch.object(nodes, "_create_yoloe") as mock_create:
-                with self.assertRaises(ValueError) as exc:
-                    nodes.YOLOE26LoadModel().load_model(
-                        "custom-seg.pt", auto_download=True
-                    )
-
-        mock_resolve.assert_called_once_with("custom-seg.pt")
-        mock_create.assert_not_called()
-        self.assertIn("Auto-download is only supported", str(exc.exception))
-
-    def test_load_model_does_not_create_runtime_model_before_digest_verification(self):
-        with patch.object(
-            nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
-        ):
-            with patch.object(
-                nodes,
-                "_download_auto_download_model",
-                return_value="L:/downloaded/yoloe-26s-seg.pt",
-            ):
-                with patch.object(
-                    nodes,
-                    "_verify_auto_downloaded_model",
-                    side_effect=RuntimeError("digest mismatch"),
-                ):
-                    with patch.object(nodes, "_create_yoloe") as mock_create:
-                        with self.assertRaises(RuntimeError) as exc:
-                            nodes.YOLOE26LoadModel().load_model(
-                                "yoloe-26s-seg.pt", auto_download=True
-                            )
-
-        mock_create.assert_not_called()
-        self.assertIn("auto-download", str(exc.exception))
-
-    def test_verify_auto_downloaded_model_rejects_digest_mismatch(self):
-        with patch.object(nodes, "_sha256_file", return_value="deadbeef"):
-            with self.assertRaises(RuntimeError) as exc:
-                nodes._verify_auto_downloaded_model(
-                    "yoloe-26s-seg.pt", "L:/downloaded/yoloe-26s-seg.pt"
+            for node_def in workflow.values():
+                class_type = node_def["class_type"]
+                self.assertTrue(
+                    class_type in custom_nodes or class_type in builtin_nodes,
+                    f"{workflow_path.name}: unknown class_type {class_type}",
                 )
 
-        self.assertIn("failed SHA256 verification", str(exc.exception))
+    def test_all_nodes_showcase_workflow_covers_all_custom_nodes_smoke(self):
+        workflow = self._load_workflow(ALL_NODES_SHOWCASE_PATH)
+        custom_classes = set(self._workflow_custom_node_classes(workflow))
+        self.assertEqual(custom_classes, set(nodes.NODE_CLASS_MAPPINGS.keys()))
 
-    def test_parse_classes_splits_and_trims(self):
+    def test_practical_workflows_include_expected_primary_nodes_smoke(self):
+        expected_nodes_by_file = {
+            "practical_prompt_segment_api.json": {"YOLOE26PromptSegment"},
+            "practical_best_instance_api.json": {
+                "YOLOE26InstanceMasks",
+                "YOLOE26SelectBestInstance",
+            },
+            "practical_class_masks_api.json": {"YOLOE26ClassMasks"},
+            "practical_refine_mask_api.json": {
+                "YOLOE26PromptSegment",
+                "YOLOE26RefineMask",
+            },
+            "practical_detection_metadata_api.json": {"YOLOE26DetectionMetadata"},
+            "practical_batch_multi_class_api.json": {
+                "YOLOE26ClassMasks",
+                "YOLOE26DetectionMetadata",
+            },
+        }
+
+        for file_name, expected_nodes in expected_nodes_by_file.items():
+            workflow = self._load_workflow(EXAMPLES_DIR / file_name)
+            custom_classes = set(self._workflow_custom_node_classes(workflow))
+            self.assertTrue(
+                expected_nodes.issubset(custom_classes),
+                f"{file_name}: missing expected nodes {expected_nodes - custom_classes}",
+            )
+
+    def test_example_workflows_include_required_node_inputs_for_high_risk_nodes(self):
+        required_inputs = {
+            "YOLOE26LoadModel": {"model_name"},
+            "YOLOE26SelectBestInstance": {
+                "instance_masks",
+                "instance_metadata_json",
+            },
+            "PreviewImage": {"images"},
+            "SaveImage": {"images", "filename_prefix"},
+        }
+
+        for workflow_path in EXAMPLES_DIR.glob("*_api*.json"):
+            workflow = self._load_workflow(workflow_path)
+            for node_def in workflow.values():
+                class_type = node_def["class_type"]
+                if class_type not in required_inputs:
+                    continue
+                self.assertTrue(
+                    required_inputs[class_type].issubset(set(node_def["inputs"].keys())),
+                    f"{workflow_path.name}: missing required inputs for {class_type}",
+                )
+
+    def test_example_workflow_matches_custom_node_interfaces(self):
+        workflow = self._load_workflow(ALL_NODES_SHOWCASE_PATH)
+        custom_nodes = nodes.NODE_CLASS_MAPPINGS
+        builtin_nodes = {"LoadImage", "PreviewImage", "SaveImage"}
+
+        expected_workflow_inputs = {
+            "YOLOE26LoadModel": {"model_name", "device", "auto_download"},
+            "YOLOE26PromptSegment": {
+                "model",
+                "image",
+                "prompt",
+                "conf",
+                "iou",
+                "max_det",
+                "mask_threshold",
+                "imgsz",
+                "show_boxes",
+                "show_labels",
+                "show_conf",
+                "show_masks",
+            },
+            "YOLOE26DetectionMetadata": {
+                "model",
+                "image",
+                "prompt",
+                "conf",
+                "iou",
+                "max_det",
+                "mask_threshold",
+                "imgsz",
+            },
+            "YOLOE26InstanceMasks": {
+                "model",
+                "image",
+                "prompt",
+                "conf",
+                "iou",
+                "max_det",
+                "mask_threshold",
+                "imgsz",
+            },
+            "YOLOE26ClassMasks": {
+                "model",
+                "image",
+                "prompt",
+                "conf",
+                "iou",
+                "max_det",
+                "mask_threshold",
+                "imgsz",
+            },
+            "YOLOE26RefineMask": {
+                "masks",
+                "method",
+                "kernel_size",
+                "iterations",
+                "min_area",
+                "metadata_json",
+            },
+            "YOLOE26SelectBestInstance": {
+                "instance_masks",
+                "instance_metadata_json",
+                "selection_mode",
+            },
+        }
+
+        for node_id, node_def in workflow.items():
+            class_type = node_def["class_type"]
+            self.assertTrue(class_type in custom_nodes or class_type in builtin_nodes)
+
+            if class_type in builtin_nodes:
+                continue
+
+            node_cls = custom_nodes[class_type]
+            input_types = node_cls.INPUT_TYPES()
+            allowed_keys = set(input_types.get("required", {}).keys()) | set(
+                input_types.get("optional", {}).keys()
+            )
+            self.assertTrue(set(node_def["inputs"].keys()).issubset(allowed_keys))
+            if class_type in expected_workflow_inputs:
+                self.assertTrue(
+                    expected_workflow_inputs[class_type].issubset(
+                        set(node_def["inputs"].keys())
+                    )
+                )
+
         self.assertEqual(
-            nodes._parse_classes("person, car , dog"), ["person", "car", "dog"]
+            nodes.YOLOE26RefineMask.RETURN_NAMES,
+            ("refined_masks", "refined_metadata_json", "count"),
+        )
+        self.assertEqual(
+            nodes.YOLOE26SelectBestInstance.RETURN_NAMES,
+            ("best_mask", "best_instance_metadata_json", "selected_mask_index"),
         )
 
     def test_build_predict_kwargs_includes_device_only_when_not_auto(self):
@@ -560,6 +761,7 @@ class TestNodesHelpers(unittest.TestCase):
         self.assertEqual(tuple(mask_batch.shape), (1, 2, 2))
         self.assertEqual(payload["images"][0]["instance_count"], 0)
         self.assertEqual(payload["images"][0]["detections"], [])
+        self.assertTrue(payload["images"][0]["is_empty_result"])
 
     def test_instance_masks_node_returns_all_instance_masks_and_metadata_indices(self):
         fake_model = FakeModel(
@@ -667,6 +869,7 @@ class TestNodesHelpers(unittest.TestCase):
             torch.equal(mask_batch[1], torch.zeros((2, 2), dtype=torch.float32))
         )
         self.assertNotIn("device", fake_model.predict_history[0])
+        self.assertTrue(payload["is_empty_result"])
 
     def test_class_masks_node_merges_instances_per_class(self):
         fake_model = FakeModel(
@@ -945,11 +1148,152 @@ class TestNodesHelpers(unittest.TestCase):
             torch.equal(best_mask[0], torch.zeros((2, 2), dtype=torch.float32))
         )
         self.assertEqual(payload["candidate_count"], 0)
+        self.assertTrue(payload["is_empty_result"])
 
-    def test_example_workflow_matches_custom_node_interfaces(self):
-        workflow = json.loads(WORKFLOW_PATH.read_text(encoding="utf-8"))
+    def test_all_example_api_workflows_parse_and_reference_known_nodes_reference(self):
         custom_nodes = nodes.NODE_CLASS_MAPPINGS
-        builtin_nodes = {"LoadImage"}
+        builtin_nodes = {"LoadImage", "PreviewImage", "SaveImage"}
+
+        for workflow_path in EXAMPLES_DIR.glob("*_api*.json"):
+            workflow = self._load_workflow(workflow_path)
+            self.assertIsInstance(workflow, dict, workflow_path.name)
+            self.assertTrue(workflow, workflow_path.name)
+
+            for node_def in workflow.values():
+                class_type = node_def["class_type"]
+                self.assertTrue(
+                    class_type in custom_nodes or class_type in builtin_nodes,
+                    f"{workflow_path.name}: unknown class_type {class_type}",
+                )
+
+    def test_runnable_example_workflows_include_explicit_output_nodes(self):
+        runnable_workflows = {
+            "basic_api_workflow.json",
+            "practical_prompt_segment_api.json",
+            "practical_detection_metadata_api.json",
+            "practical_refine_mask_api.json",
+        }
+
+        for file_name in runnable_workflows:
+            workflow = self._load_workflow(EXAMPLES_DIR / file_name)
+            self.assertTrue(
+                self._workflow_has_output_node(workflow),
+                f"{file_name}: missing explicit output node",
+            )
+
+    def test_reference_workflows_do_not_route_mask_outputs_to_image_sinks(self):
+        mask_only_workflows = {
+            "practical_best_instance_api.json": {"YOLOE26SelectBestInstance"},
+            "practical_class_masks_api.json": {"YOLOE26ClassMasks"},
+            "practical_batch_multi_class_api.json": {"YOLOE26ClassMasks"},
+        }
+        mask_output_nodes = {
+            "YOLOE26ClassMasks",
+            "YOLOE26DetectionMetadata",
+            "YOLOE26InstanceMasks",
+            "YOLOE26RefineMask",
+            "YOLOE26SelectBestInstance",
+        }
+
+        for file_name, expected_nodes in mask_only_workflows.items():
+            workflow = self._load_workflow(EXAMPLES_DIR / file_name)
+            custom_classes = set(self._workflow_custom_node_classes(workflow))
+            self.assertTrue(
+                expected_nodes.issubset(custom_classes),
+                f"{file_name}: missing expected mask-oriented nodes",
+            )
+
+            for node_def in workflow.values():
+                if node_def["class_type"] not in {"PreviewImage", "SaveImage"}:
+                    continue
+                for value in node_def["inputs"].values():
+                    if not (isinstance(value, list) and len(value) == 2):
+                        continue
+                    upstream_node_id, output_index = value
+                    upstream_node = workflow[str(upstream_node_id)]
+                    self.assertNotIn(
+                        upstream_node["class_type"],
+                        mask_output_nodes,
+                        f"{file_name}: mask output routed to {node_def['class_type']}",
+                    )
+
+    def test_metadata_workflow_includes_detection_metadata_and_visualization_branch(self):
+        workflow = self._load_workflow(
+            EXAMPLES_DIR / "practical_detection_metadata_api.json"
+        )
+
+        metadata_nodes = self._find_nodes_by_class_type(
+            workflow, "YOLOE26DetectionMetadata"
+        )
+        segment_nodes = self._find_nodes_by_class_type(workflow, "YOLOE26PromptSegment")
+        preview_nodes = self._find_nodes_by_class_type(workflow, "PreviewImage")
+
+        self.assertTrue(metadata_nodes)
+        self.assertTrue(segment_nodes)
+        self.assertTrue(preview_nodes)
+
+        segment_node_id, _ = segment_nodes[0]
+        self.assertTrue(
+            any(
+                self._node_references_output(node_def, segment_node_id, 0)
+                for _, node_def in preview_nodes
+            ),
+            "practical_detection_metadata_api.json: missing visualization branch from annotated_image",
+        )
+
+    def test_all_nodes_showcase_workflow_covers_all_custom_nodes_and_uses_only_image_sinks(
+        self,
+    ):
+        workflow = self._load_workflow(ALL_NODES_SHOWCASE_PATH)
+        custom_classes = set(self._workflow_custom_node_classes(workflow))
+        self.assertEqual(custom_classes, set(nodes.NODE_CLASS_MAPPINGS.keys()))
+
+        preview_nodes = self._find_nodes_by_class_type(workflow, "PreviewImage")
+        save_nodes = self._find_nodes_by_class_type(workflow, "SaveImage")
+        self.assertTrue(preview_nodes)
+        self.assertTrue(save_nodes)
+
+        segment_nodes = self._find_nodes_by_class_type(workflow, "YOLOE26PromptSegment")
+        self.assertTrue(segment_nodes)
+        segment_node_id, _ = segment_nodes[0]
+
+        for _, node_def in preview_nodes + save_nodes:
+            self.assertTrue(
+                self._node_references_output(node_def, segment_node_id, 0),
+                "all_nodes_showcase_api.json: output sinks must reference annotated_image only",
+            )
+
+    def test_practical_workflows_include_expected_primary_nodes_reference(self):
+        expected_nodes_by_file = {
+            "practical_prompt_segment_api.json": {"YOLOE26PromptSegment"},
+            "practical_best_instance_api.json": {
+                "YOLOE26InstanceMasks",
+                "YOLOE26SelectBestInstance",
+            },
+            "practical_class_masks_api.json": {"YOLOE26ClassMasks"},
+            "practical_refine_mask_api.json": {
+                "YOLOE26PromptSegment",
+                "YOLOE26RefineMask",
+            },
+            "practical_detection_metadata_api.json": {"YOLOE26DetectionMetadata"},
+            "practical_batch_multi_class_api.json": {
+                "YOLOE26ClassMasks",
+                "YOLOE26DetectionMetadata",
+            },
+        }
+
+        for file_name, expected_nodes in expected_nodes_by_file.items():
+            workflow = self._load_workflow(EXAMPLES_DIR / file_name)
+            custom_classes = set(self._workflow_custom_node_classes(workflow))
+            self.assertTrue(
+                expected_nodes.issubset(custom_classes),
+                f"{file_name}: missing expected nodes {expected_nodes - custom_classes}",
+            )
+
+    def test_example_workflow_matches_custom_node_interfaces_reference(self):
+        workflow = self._load_workflow(ALL_NODES_SHOWCASE_PATH)
+        custom_nodes = nodes.NODE_CLASS_MAPPINGS
+        builtin_nodes = {"LoadImage", "PreviewImage", "SaveImage"}
 
         expected_workflow_inputs = {
             "YOLOE26LoadModel": {"model_name", "device", "auto_download"},

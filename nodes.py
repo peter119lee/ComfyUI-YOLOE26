@@ -104,12 +104,7 @@ def _validate_device(device: str) -> str:
 
 
 def _resolve_model_path(model_name: str) -> str:
-    """Resolve a local YOLOE model path from supported ComfyUI model directories.
-
-    For first publication we only support local model files. Implicit downloads and
-    arbitrary paths are intentionally disabled so repository behavior stays
-    predictable and safe.
-    """
+    """Resolve a local YOLOE model path from supported ComfyUI model directories."""
     if not isinstance(model_name, str):
         raise TypeError("model_name must be a string.")
 
@@ -144,14 +139,6 @@ def _create_yoloe(model_path: str):
     from ultralytics import YOLOE
 
     return YOLOE(model_path)
-
-
-def _download_auto_download_model(model_name: str) -> str:
-    from ultralytics.utils.downloads import attempt_download_asset
-
-    release = ALLOWED_AUTO_DOWNLOAD_MODELS[model_name].get("release", "v8.4.0")
-    repo = ALLOWED_AUTO_DOWNLOAD_MODELS[model_name].get("repo", "ultralytics/assets")
-    return str(attempt_download_asset(model_name, repo=repo, release=release))
 
 
 def _runtime_model_path(runtime_model: object, fallback_name: str) -> str:
@@ -697,8 +684,9 @@ class YOLOE26LoadModel:
                     {
                         "default": False,
                         "tooltip": (
-                            "If enabled, let Ultralytics try to download the model when the local "
-                            "weight file is not found in supported ComfyUI model directories."
+                            "False = local-only loading from supported ComfyUI model directories. "
+                            "True = if the local weight file is missing, let Ultralytics try downloading "
+                            "the requested official model first."
                         ),
                     },
                 ),
@@ -721,17 +709,32 @@ class YOLOE26LoadModel:
         except FileNotFoundError as exc:
             if not auto_download:
                 raise FileNotFoundError(
-                    f"{exc} Enable auto_download to let Ultralytics try downloading '{model_name}'."
+                    f"{exc} Enable auto_download to let Ultralytics try downloading '{model_name}', "
+                    "or manually place the .pt file in a supported ComfyUI model directory."
                 ) from exc
-            approved_model_name = _validate_auto_download_model_name(model_name)
+
+            download_model_name = _validate_auto_download_model_name(model_name)
+            download_config = ALLOWED_AUTO_DOWNLOAD_MODELS[download_model_name]
             try:
-                resolved = _download_auto_download_model(approved_model_name)
-                _verify_auto_downloaded_model(approved_model_name, resolved)
+                from ultralytics.utils.downloads import attempt_download_asset
+
+                resolved = attempt_download_asset(
+                    download_model_name,
+                    repo=download_config["repo"],
+                    release=download_config["release"],
+                )
+                if not Path(resolved).exists():
+                    raise FileNotFoundError(
+                        f"Ultralytics did not return a downloadable path for '{download_model_name}'."
+                    )
+                _verify_auto_downloaded_model(download_model_name, resolved)
                 runtime_model = _create_yoloe(resolved)
             except Exception as download_exc:
                 raise RuntimeError(
-                    f"Failed to auto-download YOLOE-26 model '{approved_model_name}': {download_exc}"
+                    f"Failed to auto-download YOLOE-26 model '{model_name}': {download_exc}. "
+                    "Check network access, local write permissions, and Ultralytics upstream availability."
                 ) from download_exc
+
         else:
             try:
                 runtime_model = _create_yoloe(resolved)
@@ -1189,6 +1192,7 @@ class YOLOE26InstanceMasks:
                     "instance_count": len(output_mask_indices),
                     "output_mask_indices": output_mask_indices,
                     "detections": output_detections,
+                    "is_empty_result": bool(len(output_mask_indices) == 0),
                 }
             )
 
@@ -1211,6 +1215,7 @@ class YOLOE26InstanceMasks:
                 "imgsz": int(imgsz),
                 "total_images": int(image.shape[0]),
                 "total_instances": int(total_instances),
+                "is_empty_result": bool(total_instances == 0),
                 "images": image_entries,
             }
         )
@@ -1363,6 +1368,9 @@ class YOLOE26ClassMasks:
                 "total_images": int(image.shape[0]),
                 "class_count": len(classes),
                 "output_mask_count": int(len(all_class_masks)),
+                "is_empty_result": bool(
+                    len(entries) > 0 and all(entry["source_instance_count"] == 0 for entry in entries)
+                ),
                 "entries": entries,
             }
         )
@@ -1600,6 +1608,7 @@ class YOLOE26SelectBestInstance:
                         "selected_mask_index": -1,
                         "candidate_count": 0,
                         "selected_detection": None,
+                        "is_empty_result": True,
                     }
                 ),
                 -1,
@@ -1629,6 +1638,7 @@ class YOLOE26SelectBestInstance:
                         "selected_mask_index": -1,
                         "candidate_count": int(len(records)),
                         "selected_detection": None,
+                        "is_empty_result": True,
                     }
                 ),
                 -1,
@@ -1647,6 +1657,7 @@ class YOLOE26SelectBestInstance:
                     "selected_mask_index": selected_output_mask_index,
                     "candidate_count": int(len(records)),
                     "selected_detection": selected_record,
+                    "is_empty_result": False,
                 }
             ),
             selected_output_mask_index,

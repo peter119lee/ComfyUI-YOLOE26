@@ -57,8 +57,8 @@
 
 ```text
 Load Image --------------------\
-                                -> YOLOE-26 Prompt Segment
-YOLOE-26 Load Model ----------/
+                                -> YOLOE-26 Prompt Segment -> PreviewImage
+YOLOE-26 Load Model ----------/                           \-> SaveImage（可選）
 ```
 
 ### 建議參數
@@ -100,21 +100,29 @@ YOLOE-26 Load Model ----------/
 
 ## 4. Example workflow smoke test
 
-repo 內已附：
+repo 內附的 examples 都是 **API-format workflows**，不是完整的 UI-exported graph：
+
+### 4.1 Minimal smoke test
 
 - `examples/basic_api_workflow.json`
 
-這是一個 **API-format workflow example**，不是完整的 UI-exported graph。
-如果你是走 ComfyUI API 流程，請把它當成 API prompt payload 的測試參考。
-如果你只在 UI 中測試，請依照這份 JSON 的節點與參數手動重建 workflow，不要把它當成 UI graph 匯入檔。
+這是最小成功路徑，只覆蓋：
 
-### 執行前確認
+- `YOLOE26LoadModel`
+- `YOLOE26PromptSegment`
 
-- [ ] `example.png` 已放到 ComfyUI input 目錄
-- [ ] `yoloe-26s-seg.pt` 已放到支援模型路徑
-- [ ] ComfyUI 可正常讀取這兩個檔案
+執行後確認：
 
-### 這個 workflow 會覆蓋的節點
+- [ ] workflow 可跑完
+- [ ] `Prompt Segment` 有輸出 annotated `IMAGE`
+- [ ] `Prompt Segment` 有輸出 merged `MASK`
+- [ ] `iou` / `max_det` / `mask_threshold` 參數有被正確接受
+
+### 4.2 All-nodes showcase reference
+
+- `examples/all_nodes_showcase_api.json`
+
+這是完整 node-pack wiring reference，應覆蓋全部 7 個 custom nodes：
 
 - [ ] `YOLOE26LoadModel`
 - [ ] `YOLOE26PromptSegment`
@@ -124,16 +132,39 @@ repo 內已附：
 - [ ] `YOLOE26RefineMask`
 - [ ] `YOLOE26SelectBestInstance`
 
-### 執行後確認
+這份 workflow 的用途是核對 node coverage 與合法 wiring，不要求所有 `MASK` 輸出都能在 repo 內直接接到 built-in image sink。
+執行後確認：
 
-- [ ] workflow 可完整跑完
-- [ ] `Prompt Segment` 有輸出預覽圖與 merged mask
+- [ ] `Prompt Segment` 的 annotated `IMAGE` branch 可用
 - [ ] `Detection Metadata` 有輸出 `metadata_json`
 - [ ] `Instance Masks` 有輸出 `instance_masks`
 - [ ] `Class Masks` 有輸出 `class_masks`
 - [ ] `Refine Mask` 有輸出 `refined_masks`
 - [ ] `Select Best Instance` 有輸出 `best_mask`
-- [ ] `iou` / `max_det` / `mask_threshold` 參數有被正確接受
+- [ ] 沒有把 `MASK` 輸出直接接到 `PreviewImage` / `SaveImage`
+
+### 4.3 Real application smoke set
+
+下列 practical examples 建議至少抽測 2 份，公開發布前可全測：
+
+| file name | scenario focus | main nodes |
+| --- | --- | --- |
+| `practical_prompt_segment_api.json` | merged mask for inpainting / cropping / compositing | `YOLOE26PromptSegment` |
+| `practical_best_instance_api.json` | API/reference workflow for selecting one best subject | `YOLOE26InstanceMasks`, `YOLOE26SelectBestInstance` |
+| `practical_class_masks_api.json` | API/reference workflow for class-wise routing | `YOLOE26ClassMasks` |
+| `practical_refine_mask_api.json` | post-process masks while keeping a visible annotated branch | `YOLOE26PromptSegment`, `YOLOE26RefineMask` |
+| `practical_detection_metadata_api.json` | metadata-driven automation | `YOLOE26DetectionMetadata`, `YOLOE26PromptSegment` |
+| `practical_batch_multi_class_api.json` | multi-class prompt + metadata alignment checks | `YOLOE26ClassMasks`, `YOLOE26DetectionMetadata` |
+
+每份 practical workflow 至少確認其主節點輸出可用，且用途與檔名相符。
+若你需要可視化 `MASK`，請接使用者環境中已確認相容的 downstream node；repo 內目前不假設任何特定 built-in `MASK -> IMAGE` converter。
+
+### 執行前確認
+
+- [ ] `example.png` 已放到 ComfyUI input 目錄
+- [ ] `yoloe-26s-seg.pt` 已放到支援模型路徑
+- [ ] ComfyUI 可正常讀取這兩個檔案
+- [ ] 理解這些 JSON 是 API payload 參考，不是 UI graph 匯入檔
 
 ---
 
@@ -232,12 +263,15 @@ repo 內已附：
 
 - [ ] 7 個節點都能載入
 - [ ] 最小 UI 流程可跑
-- [ ] example workflow 可跑
+- [ ] `basic_api_workflow.json` 可跑
+- [ ] `practical_prompt_segment_api.json` 可跑
+- [ ] `practical_detection_metadata_api.json` 可跑
+- [ ] `all_nodes_showcase_api.json` 可作為 reference 並符合合法 wiring
 - [ ] `Prompt Segment` 可輸出 image / mask / count
 - [ ] `Detection Metadata` 可輸出可解析 JSON
 - [ ] `Instance Masks` / `Class Masks` 行為符合預期
-- [ ] `Refine Mask` 與 `Select Best Instance` 可成功接在 workflow 內
-- [ ] 至少一個真實 downstream workflow 驗證成功
+- [ ] `Refine Mask` 與 `Select Best Instance` 的 contract 可在 workflow 內驗證
+- [ ] 至少 2 份 practical examples 驗證成功
 
 如果 smoke test 通過，但你還要公開發布，下一步請看：
 

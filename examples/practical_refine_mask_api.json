@@ -37,6 +37,19 @@
     }
   },
   "4": {
+    "class_type": "YOLOE26RefineMask",
+    "inputs": {
+      "masks": [
+        "3",
+        1
+      ],
+      "method": "largest_component",
+      "kernel_size": 3,
+      "iterations": 1,
+      "min_area": 0
+    }
+  },
+  "5": {
     "class_type": "PreviewImage",
     "inputs": {
       "images": [

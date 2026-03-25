@@ -44,5 +44,15 @@
         0
       ]
     }
+  },
+  "5": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "3",
+        0
+      ],
+      "filename_prefix": "ComfyUI-YOLOE26/practical_prompt_segment"
+    }
   }
 }
