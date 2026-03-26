@@ -6,12 +6,13 @@
 
 這是一個 ComfyUI custom node pack，不是獨立應用程式。
 
-## 狀態
+## 状态
 
 - 可用的 **beta / release candidate**
-- helper / node-level tests 已通過
-- 在更廣泛公開發布前，仍建議先做真實 ComfyUI smoke / integration 驗證
-- **Local-first model loading**；automatic download 為可選，且預設關閉。啟用後，loader 會依照 Ultralytics 上游的 model-loading 行為，嘗試解析並下載指定的官方權重。
+- helper / node-level tests 已通过
+- 在更广泛公开发布前，仍建议先做真实 ComfyUI smoke / integration 验证
+- **Local-first model loading**；automatic download 为可选，且默认关闭。启用后，loader 会按照 Ultralytics 上游的 model-loading 行为，尝试解析并下载指定的官方权重。
+- 模型选择器是下拉框：以 `(local)` 结尾的选项表示它已经存在于受支持的 ComfyUI model 目录中；以 `(downloadable)` 结尾的选项表示这是官方预设，启用 `auto_download` 后可以下载。
 
 ## 這個 node pack 提供什麼
 
@@ -52,27 +53,27 @@ git clone https://github.com/peter119lee/ComfyUI-YOLOE26 ComfyUI-YOLOE26
 pip install -r requirements.txt
 ```
 
-這個 node pack 預期 host 端的 ComfyUI 環境已經提供相容的 `torch`、`numpy`、`cv2`。
-為了降低與 host 環境衝突的機率，`requirements.txt` 目前只列出 `ultralytics`。
+这個 node pack 预期 host 端的 ComfyUI 环境已经提供相容的 `torch`、`numpy`、`cv2`。
+为了降低与 host 环境冲突的概率，`requirements.txt` 目前只列出 `ultralytics`。
 
 ### 2. 放置本地 YOLOE-26 模型
 
-loader 採用 local-first 設計。請把 `.pt` 檔放到以下支援路徑之一；如果你希望在本地模型缺失時由 Ultralytics 嘗試自動下載官方權重，也可以在 loader node 啟用 `auto_download`。
+loader 采用 local-first 设计。请使用 `YOLOE-26 Load Model` 的下拉选单：以 `(local)` 结尾的选项表示它已经存在于受支持的 ComfyUI model 目录中；以 `(downloadable)` 结尾的选项表示这是官方预设，启用 `auto_download` 后可以下载。
 
-把 `.pt` 檔放到以下其中一個支援位置：
+把 `.pt` 文件放到以下其中一个支持位置：
 
 - `ComfyUI/models/ultralytics/segm/`
 - `ComfyUI/models/ultralytics/bbox/`
 - `ComfyUI/models/ultralytics/`
 - `ComfyUI/models/yoloe/`
 
-範例模型名稱：
+示例模型名称：
 
 ```text
 yoloe-26s-seg.pt
 ```
 
-### 3. 重新啟動 ComfyUI
+### 3. 重新启动 ComfyUI
 
 重啟後，請確認 node list 中能看到這 7 個 `YOLOE-26 ...` 節點。
 
@@ -84,7 +85,9 @@ Prompt String -------------------> YOLOE-26 Prompt Segment -> annotated_image ->
 YOLOE-26 Load Model ----------/                             \-> mask -> use downstream
 ```
 
-建議第一輪測試參數：
+这个 `mask` 输出是给其他支持 MASK 的节点使用的。如果你要接 image sink，请先用 mask-to-image 节点做转换。
+
+建议第一轮测试参数：
 
 - `model_name`: `yoloe-26s-seg.pt`
 - `device`: `auto`
@@ -95,7 +98,7 @@ YOLOE-26 Load Model ----------/                             \-> mask -> use down
 - `mask_threshold`: `0.5`
 - `imgsz`: `640`
 
-## 常見 workflow 模式
+## 常见 workflow 模式
 
 ### 簡單 prompt segmentation
 
@@ -151,13 +154,14 @@ red apple, green bottle
 
 ### 1. YOLOE-26 Load Model
 
-載入並驗證本地 YOLOE-26 模型檔。
-只應載入你信任的 `.pt` 檔。
+载入并验证本地 YOLOE-26 模型文件。
+只应载入你信任的 `.pt` 文件。
+模型下拉选单会把官方预设显示为 `(downloadable)`，把已经存在于受支持 ComfyUI model 目录中的文件显示为 `(local)`。
 
 **Inputs**
-- `model_name`: 本地權重檔名，例如 `yoloe-26s-seg.pt`
-- `device`: `auto`、`cpu`、`cuda`、`cuda:N`，以及支援時的 `mps`
-- `auto_download`: `false` = 僅從支援的 ComfyUI model 目錄做本地載入；`true` = 若本地模型不存在，讓 Ultralytics 先嘗試下載指定官方模型
+- `model_name`: 本地权重文件名，例如 `yoloe-26s-seg.pt`
+- `device`: `auto`、`cpu`、`cuda`、`cuda:N`，以及支持时的 `mps`
+- `auto_download`: `false` = 仅从受支持的 ComfyUI model 目录做本地载入；`true` = 如果本地模型不存在，让 Ultralytics 先尝试下载指定官方模型
 
 **Outputs**
 - `YOLOE_MODEL`

@@ -12,6 +12,7 @@ This is a ComfyUI custom node pack, not a standalone application.
 - Helper / node-level tests are passing
 - Real ComfyUI smoke / integration validation is still recommended before wider public release
 - **Local-first model loading**; automatic download is optional and disabled by default. When enabled, the loader asks Ultralytics to resolve and download the requested official weight using its upstream model-loading behavior.
+- The model picker is a dropdown: labels ending in `(local)` already exist in supported ComfyUI model folders, and labels ending in `(downloadable)` are official presets that can be fetched when `auto_download` is enabled.
 
 ## What this node pack adds
 
@@ -57,7 +58,7 @@ Only `ultralytics` is listed in `requirements.txt` to reduce the chance of confl
 
 ### 2. Place a local YOLOE-26 model
 
-The loader is local-first. Put your `.pt` file in one of these supported locations, or enable `auto_download` in the loader node if you want Ultralytics to try downloading a missing official weight automatically.
+The loader is local-first. Use the dropdown in `YOLOE-26 Load Model`: labels ending in `(local)` already exist in supported ComfyUI model folders, and labels ending in `(downloadable)` are official presets that can be fetched when `auto_download` is enabled.
 
 Put your `.pt` file in one of these supported locations:
 
@@ -83,6 +84,8 @@ Load Image --------------------\
 Prompt String -------------------> YOLOE-26 Prompt Segment -> annotated_image -> PreviewImage
 YOLOE-26 Load Model ----------/                             \-> mask -> use downstream
 ```
+
+That `mask` output is intended for other MASK-aware nodes. If you connect it to an image sink, convert it first with a mask-to-image node.
 
 Recommended first test:
 
@@ -153,6 +156,7 @@ red apple, green bottle
 
 Loads and validates a local YOLOE-26 model file.
 Only load `.pt` files you trust.
+The model dropdown shows official presets as `(downloadable)` and existing files in supported ComfyUI model folders as `(local)`.
 
 **Inputs**
 - `model_name`: local weight file name, for example `yoloe-26s-seg.pt`
