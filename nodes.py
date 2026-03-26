@@ -77,29 +77,42 @@ def _candidate_model_dirs() -> tuple[Path, ...]:
     )
 
 
-def _candidate_model_choices() -> list[str]:
-    available_local_names: set[str] = set()
+def _resolve_model_path(model_name: str) -> str:
+    """Resolve a local YOLOE model path from supported ComfyUI model directories."""
+    if not isinstance(model_name, str):
+        raise TypeError("model_name must be a string.")
+
+    name = model_name.strip()
+    if not name:
+        raise ValueError("model_name cannot be empty.")
+
+    if Path(name).name != name:
+        raise ValueError(
+            "model_name must be a file name only. Put the model file inside "
+            "ComfyUI/models/ultralytics/... or ComfyUI/models/yoloe/."
+        )
+
+    if not name.endswith(ALLOWED_MODEL_EXTENSIONS):
+        raise ValueError(
+            f"Unsupported model extension for '{name}'. Supported extensions: "
+            f"{', '.join(ALLOWED_MODEL_EXTENSIONS)}."
+        )
+
     for directory in _candidate_model_dirs():
-        if not directory.exists():
-            continue
-        for candidate in directory.glob("*.pt"):
-            if candidate.is_file():
-                available_local_names.add(candidate.name)
+        candidate = directory / name
+        if candidate.exists() and candidate.is_file():
+            return str(candidate)
 
-    choices: list[str] = []
-    seen: set[str] = set()
+    raise FileNotFoundError(
+        f"Model '{name}' was not found in supported local ComfyUI model directories. "
+        "Place the weight file in ComfyUI/models/ultralytics/... or ComfyUI/models/yoloe/."
+    )
 
-    for model_name in ALLOWED_AUTO_DOWNLOAD_MODELS:
-        status = "local" if model_name in available_local_names else "downloadable"
-        choices.append(f"{model_name} ({status})")
-        seen.add(model_name)
 
-    for model_name in sorted(available_local_names):
-        if model_name in seen:
-            continue
-        choices.append(f"{model_name} (local)")
+def _create_yoloe(model_path: str):
+    from ultralytics import YOLOE
 
-    return choices
+    return YOLOE(model_path)
 
 
 def _device_choices() -> list[str]:
