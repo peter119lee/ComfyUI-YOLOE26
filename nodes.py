@@ -102,22 +102,6 @@ def _candidate_model_choices() -> list[str]:
     return choices
 
 
-def _normalize_model_selection(model_name: str) -> str:
-    if not isinstance(model_name, str):
-        raise TypeError("model_name must be a string.")
-
-    name = model_name.strip()
-    if not name:
-        raise ValueError("model_name cannot be empty.")
-
-    if name.endswith(" (local)"):
-        return name.removesuffix(" (local)").strip()
-    if name.endswith(" (downloadable)"):
-        return name.removesuffix(" (downloadable)").strip()
-
-    return name
-
-
 def _device_choices() -> list[str]:
     choices = ["auto", "cpu"]
     if torch.cuda.is_available():
@@ -134,6 +118,33 @@ def _device_choices() -> list[str]:
         seen.add(choice)
         unique_choices.append(choice)
     return unique_choices
+
+
+def _normalize_model_selection(model_name: str) -> str:
+    if not isinstance(model_name, str):
+        raise TypeError("model_name must be a string.")
+
+    name = model_name.strip()
+    if not name:
+        raise ValueError("model_name cannot be empty.")
+
+    if name.endswith(" (local)"):
+        return name.removesuffix(" (local)").strip()
+    if name.endswith(" (downloadable)"):
+        return name.removesuffix(" (downloadable)").strip()
+
+    return name
+
+
+def _candidate_model_base_names() -> set[str]:
+    names: set[str] = set(ALLOWED_AUTO_DOWNLOAD_MODELS.keys())
+    for directory in _candidate_model_dirs():
+        if not directory.exists():
+            continue
+        for candidate in directory.glob("*.pt"):
+            if candidate.is_file():
+                names.add(candidate.name)
+    return names
 
 
 def _validate_device(device: str) -> str:
@@ -708,7 +719,7 @@ class YOLOE26LoadModel:
             raise ValueError(f"Unsupported device '{device}'.")
 
         selected_model_name = _normalize_model_selection(model_name)
-        if selected_model_name not in _candidate_model_choices():
+        if selected_model_name not in _candidate_model_base_names():
             raise ValueError(f"Unsupported model selection '{model_name}'.")
 
         try:
