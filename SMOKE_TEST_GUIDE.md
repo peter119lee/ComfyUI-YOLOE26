@@ -106,10 +106,11 @@ repo 內附的 examples 都是 **API-format workflows**，不是完整的 UI-exp
 
 - `examples/basic_api_workflow.json`
 
-這是最小成功路徑，只覆蓋：
+這是最小成功路徑，覆蓋 4 個節點：
 
-- `YOLOE26LoadModel`
-- `YOLOE26PromptSegment`
+```text
+LoadImage -> YOLOE26LoadModel -> YOLOE26PromptSegment -> PreviewImage
+```
 
 執行後確認：
 

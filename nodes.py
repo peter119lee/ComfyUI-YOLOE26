@@ -102,6 +102,7 @@ def _candidate_model_choices() -> list[str]:
     return choices
 
 
+def _resolve_model_path(model_name: str) -> str:
     """Resolve a local YOLOE model path from supported ComfyUI model directories."""
     if not isinstance(model_name, str):
         raise TypeError("model_name must be a string.")
@@ -417,6 +418,14 @@ def _run_single_prediction(
     try:
         return yoloe.predict(img_bgr, **predict_kwargs)[0]
     except Exception as exc:
+        oom = isinstance(exc, torch.cuda.OutOfMemoryError) if hasattr(torch.cuda, "OutOfMemoryError") else (
+            "out of memory" in str(exc).lower() or "cuda out of memory" in str(exc).lower()
+        )
+        if oom:
+            raise RuntimeError(
+                f"YOLOE-26 inference ran out of GPU memory (imgsz={predict_kwargs['imgsz']}). "
+                "Try reducing imgsz or batch size."
+            ) from exc
         raise RuntimeError(
             f"YOLOE-26 inference failed for prompt classes {classes}, imgsz={predict_kwargs['imgsz']}: {exc}"
         ) from exc
@@ -431,11 +440,18 @@ def _comfy_image_to_bgr(image_tensor: torch.Tensor) -> np.ndarray:
             f"got {tuple(image_tensor.shape)}."
         )
 
-    img_np = (
-        (image_tensor.detach().cpu().float().numpy() * 255.0)
-        .clip(0, 255)
-        .astype(np.uint8)
-    )
+    arr = image_tensor.detach().cpu().numpy()
+    if arr.dtype != np.float32:
+        if np.issubdtype(arr.dtype, np.floating):
+            arr = arr.astype(np.float32)
+        elif np.issubdtype(arr.dtype, np.integer):
+            arr = arr.astype(np.float32) / float(np.iinfo(arr.dtype).max)
+        else:
+            raise ValueError(
+                f"_comfy_image_to_bgr: unsupported tensor dtype '{arr.dtype}'. "
+                "Expected float32 (values in [0, 1]) or an integer dtype."
+            )
+    img_np = (arr * 255.0).clip(0, 255).astype(np.uint8)
     return cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
 
 
@@ -546,8 +562,16 @@ def _refine_mask(
             refined = cv2.morphologyEx(
                 refined.astype(np.uint8), cv2.MORPH_CLOSE, kernel, iterations=iterations
             )
+        elif method in REFINE_METHODS:
+            raise ValueError(
+                f"Refine method '{method}' is listed in REFINE_METHODS but has no implementation "
+                "in the kernel-based branch. This is an internal error; please report it."
+            )
         else:
-            raise ValueError(f"Unsupported refine method '{method}'.")
+            raise ValueError(
+                f"Unknown refine method '{method}'. "
+                f"Supported methods: {', '.join(REFINE_METHODS)}."
+            )
 
     refined = refined.astype(np.float32)
     if min_area > 0 and float(refined.sum()) < float(min_area):

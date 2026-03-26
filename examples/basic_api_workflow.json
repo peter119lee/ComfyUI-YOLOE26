@@ -2,28 +2,29 @@
   "1": {
     "class_type": "LoadImage",
     "inputs": {
-      "image": "example.png"
+      "image": "example.png",
+      "upload": "image"
+    },
+    "_meta": {
+      "title": "Load Image"
     }
   },
   "2": {
     "class_type": "YOLOE26LoadModel",
     "inputs": {
-      "model_name": "yoloe-26s-seg.pt",
+      "model_name": "yoloe-26s-seg.pt (downloadable)",
       "device": "auto",
       "auto_download": false
+    },
+    "_meta": {
+      "title": "YOLOE-26 Load Model"
     }
   },
   "3": {
     "class_type": "YOLOE26PromptSegment",
     "inputs": {
-      "model": [
-        "2",
-        0
-      ],
-      "image": [
-        "1",
-        0
-      ],
+      "model": ["2", 0],
+      "image": ["1", 0],
       "prompt": "person",
       "conf": 0.1,
       "iou": 0.7,
@@ -34,266 +35,18 @@
       "show_labels": true,
       "show_conf": true,
       "show_masks": true
+    },
+    "_meta": {
+      "title": "YOLOE-26 Prompt Segment"
     }
   },
   "4": {
-    "class_type": "YOLOE26DetectionMetadata",
-    "inputs": {
-      "model": [
-        "2",
-        0
-      ],
-      "image": [
-        "1",
-        0
-      ],
-      "prompt": "person",
-      "conf": 0.1,
-      "iou": 0.7,
-      "max_det": 300,
-      "mask_threshold": 0.5,
-      "imgsz": 640
-    }
-  },
-  "5": {
-    "class_type": "YOLOE26InstanceMasks",
-    "inputs": {
-      "model": [
-        "2",
-        0
-      ],
-      "image": [
-        "1",
-        0
-      ],
-      "prompt": "person",
-      "conf": 0.1,
-      "iou": 0.7,
-      "max_det": 300,
-      "mask_threshold": 0.5,
-      "imgsz": 640
-    }
-  },
-  "6": {
-    "class_type": "YOLOE26ClassMasks",
-    "inputs": {
-      "model": [
-        "2",
-        0
-      ],
-      "image": [
-        "1",
-        0
-      ],
-      "prompt": "person,car",
-      "conf": 0.1,
-      "iou": 0.7,
-      "max_det": 300,
-      "mask_threshold": 0.5,
-      "imgsz": 640
-    }
-  },
-  "7": {
-    "class_type": "YOLOE26RefineMask",
-    "inputs": {
-      "masks": [
-        "3",
-        1
-      ],
-      "method": "largest_component",
-      "kernel_size": 3,
-      "iterations": 1,
-      "min_area": 0,
-      "metadata_json": [
-        "5",
-        1
-      ]
-    }
-  },
-  "8": {
-    "class_type": "YOLOE26SelectBestInstance",
-    "inputs": {
-      "instance_masks": [
-        "5",
-        0
-      ],
-      "instance_metadata_json": [
-        "5",
-        1
-      ],
-      "selection_mode": "highest_confidence"
-    }
-  },
-  "9": {
     "class_type": "PreviewImage",
     "inputs": {
-      "images": [
-        "3",
-        0
-      ]
-    }
-  },
-  "10": {
-    "class_type": "SaveImage",
-    "inputs": {
-      "images": [
-        "3",
-        0
-      ],
-      "filename_prefix": "ComfyUI-YOLOE26/showcase_prompt_segment"
-    }
-  },
-  "11": {
-    "class_type": "MaskToImage",
-    "inputs": {
-      "mask": [
-        "6",
-        0
-      ]
-    }
-  },
-  "12": {
-    "class_type": "PreviewImage",
-    "inputs": {
-      "images": [
-        "11",
-        0
-      ]
-    }
-  },
-  "13": {
-    "class_type": "MaskToImage",
-    "inputs": {
-      "mask": [
-        "7",
-        0
-      ]
-    }
-  },
-  "14": {
-    "class_type": "PreviewImage",
-    "inputs": {
-      "images": [
-        "13",
-        0
-      ]
-    }
-  },
-  "15": {
-    "class_type": "MaskToImage",
-    "inputs": {
-      "mask": [
-        "8",
-        0
-      ]
-    }
-  },
-  "16": {
-    "class_type": "PreviewImage",
-    "inputs": {
-      "images": [
-        "15",
-        0
-      ]
-    }
-  },
-  "17": {
-    "class_type": "PreviewAny",
-    "inputs": {
-      "source": [
-        "3",
-        2
-      ]
-    }
-  },
-  "18": {
-    "class_type": "PreviewAny",
-    "inputs": {
-      "source": [
-        "4",
-        0
-      ]
-    }
-  },
-  "19": {
-    "class_type": "PreviewAny",
-    "inputs": {
-      "source": [
-        "4",
-        1
-      ]
-    }
-  },
-  "20": {
-    "class_type": "PreviewAny",
-    "inputs": {
-      "source": [
-        "5",
-        1
-      ]
-    }
-  },
-  "21": {
-    "class_type": "PreviewAny",
-    "inputs": {
-      "source": [
-        "5",
-        2
-      ]
-    }
-  },
-  "22": {
-    "class_type": "PreviewAny",
-    "inputs": {
-      "source": [
-        "6",
-        1
-      ]
-    }
-  },
-  "23": {
-    "class_type": "PreviewAny",
-    "inputs": {
-      "source": [
-        "6",
-        2
-      ]
-    }
-  },
-  "24": {
-    "class_type": "PreviewAny",
-    "inputs": {
-      "source": [
-        "7",
-        1
-      ]
-    }
-  },
-  "25": {
-    "class_type": "PreviewAny",
-    "inputs": {
-      "source": [
-        "7",
-        2
-      ]
-    }
-  },
-  "26": {
-    "class_type": "PreviewAny",
-    "inputs": {
-      "source": [
-        "8",
-        1
-      ]
-    }
-  },
-  "27": {
-    "class_type": "PreviewAny",
-    "inputs": {
-      "source": [
-        "8",
-        2
-      ]
+      "images": ["3", 0]
+    },
+    "_meta": {
+      "title": "Preview Image"
     }
   }
 }

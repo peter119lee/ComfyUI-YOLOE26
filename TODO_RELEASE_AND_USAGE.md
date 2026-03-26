@@ -170,14 +170,11 @@
 - [ ] 理解這是一個 **API-format workflow example**，不是完整的 UI-exported workflow graph
 - [ ] 把 `example.png` 放到 ComfyUI input 目錄
 - [ ] 確認 `yoloe-26s-seg.pt` 已放到支援路徑
-- [ ] 執行 workflow，確認以下節點都能串起來：
+- [ ] 執行 workflow，確認 4 個節點都能串起來（LoadImage → YOLOE26LoadModel → YOLOE26PromptSegment → PreviewImage）：
+  - [ ] `LoadImage`
   - [ ] `YOLOE26LoadModel`
   - [ ] `YOLOE26PromptSegment`
-  - [ ] `YOLOE26DetectionMetadata`
-  - [ ] `YOLOE26InstanceMasks`
-  - [ ] `YOLOE26ClassMasks`
-  - [ ] `YOLOE26RefineMask`
-  - [ ] `YOLOE26SelectBestInstance`
+  - [ ] `PreviewImage`
 - [ ] 確認 workflow 中的這些控制參數都可用：
   - [ ] `iou`
   - [ ] `max_det`
