@@ -108,18 +108,24 @@ class TestNodesHelpers(unittest.TestCase):
         )
 
     @staticmethod
+    def _workflow_node_class(workflow: dict, node_id: str) -> str:
+        return workflow[node_id]["class_type"]
+
+    @staticmethod
     def _node_references_output(node_def: dict, upstream_node_id: str, output_index: int) -> bool:
         target_reference = [upstream_node_id, output_index]
         return any(value == target_reference for value in node_def["inputs"].values())
 
-    def test_load_model_input_types_exposes_auto_download_toggle(self):
+    def test_load_model_input_types_exposes_model_choice_list(self):
         input_types = nodes.YOLOE26LoadModel.INPUT_TYPES()
-        self.assertIn("auto_download", input_types["optional"])
-        auto_download_type, auto_download_config = input_types["optional"][
-            "auto_download"
-        ]
-        self.assertEqual(auto_download_type, "BOOLEAN")
-        self.assertFalse(auto_download_config["default"])
+        model_type, model_config = input_types["required"]["model_name"]
+        self.assertIsInstance(model_type, list)
+        self.assertIn("yoloe-26s-seg.pt (downloadable)", model_type)
+        self.assertIn("yoloe-26m-seg.pt (downloadable)", model_type)
+        self.assertIn("yoloe-26l-seg.pt (downloadable)", model_type)
+        self.assertIn("yoloe-26x-seg.pt (downloadable)", model_type)
+        self.assertEqual(model_config["default"], "yoloe-26s-seg.pt (downloadable)")
+        self.assertIn("tooltip", model_config)
 
     def test_load_model_raises_file_not_found_when_model_missing_and_auto_download_disabled(
         self,
@@ -159,7 +165,7 @@ class TestNodesHelpers(unittest.TestCase):
                                 return_value="L:/downloaded/yoloe-26s-seg.pt",
                             ) as mock_attempt:
                                 (bundle,) = nodes.YOLOE26LoadModel().load_model(
-                                    "yoloe-26s-seg.pt", auto_download=True
+                                    "yoloe-26s-seg.pt (downloadable)", auto_download=True
                                 )
 
         mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
@@ -187,7 +193,7 @@ class TestNodesHelpers(unittest.TestCase):
                 nodes, "_create_yoloe", return_value=runtime_model
             ) as mock_create:
                 (bundle,) = nodes.YOLOE26LoadModel().load_model(
-                    "yoloe-26s-seg.pt", auto_download=True
+                    "yoloe-26s-seg.pt (local)", auto_download=True
                 )
 
         mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
@@ -200,13 +206,18 @@ class TestNodesHelpers(unittest.TestCase):
         ) as mock_resolve:
             with patch.object(
                 nodes,
-                "_create_yoloe",
-                side_effect=RuntimeError("network disabled"),
-            ) as mock_create:
-                with self.assertRaises(RuntimeError) as exc:
-                    nodes.YOLOE26LoadModel().load_model(
-                        "yoloe-26s-seg.pt", auto_download=True
-                    )
+                "_validate_auto_download_model_name",
+                return_value="yoloe-26s-seg.pt",
+            ):
+                with patch.object(
+                    nodes,
+                    "_create_yoloe",
+                    side_effect=RuntimeError("network disabled"),
+                ) as mock_create:
+                    with self.assertRaises(RuntimeError) as exc:
+                        nodes.YOLOE26LoadModel().load_model(
+                            "yoloe-26s-seg.pt (downloadable)", auto_download=True
+                        )
 
         mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
         mock_create.assert_called_once_with("yoloe-26s-seg.pt")
@@ -294,7 +305,7 @@ class TestNodesHelpers(unittest.TestCase):
 
     def test_all_example_api_workflows_parse_and_reference_known_nodes_smoke(self):
         custom_nodes = nodes.NODE_CLASS_MAPPINGS
-        builtin_nodes = {"LoadImage", "PreviewImage", "SaveImage"}
+        builtin_nodes = {"LoadImage", "PreviewImage", "SaveImage", "MaskToImage", "PreviewAny"}
 
         for workflow_path in EXAMPLES_DIR.glob("*_api*.json"):
             workflow = self._load_workflow(workflow_path)
@@ -365,7 +376,7 @@ class TestNodesHelpers(unittest.TestCase):
     def test_example_workflow_matches_custom_node_interfaces(self):
         workflow = self._load_workflow(ALL_NODES_SHOWCASE_PATH)
         custom_nodes = nodes.NODE_CLASS_MAPPINGS
-        builtin_nodes = {"LoadImage", "PreviewImage", "SaveImage"}
+        builtin_nodes = {"LoadImage", "PreviewImage", "SaveImage", "MaskToImage", "PreviewAny"}
 
         expected_workflow_inputs = {
             "YOLOE26LoadModel": {"model_name", "device", "auto_download"},
@@ -1152,7 +1163,7 @@ class TestNodesHelpers(unittest.TestCase):
 
     def test_all_example_api_workflows_parse_and_reference_known_nodes_reference(self):
         custom_nodes = nodes.NODE_CLASS_MAPPINGS
-        builtin_nodes = {"LoadImage", "PreviewImage", "SaveImage"}
+        builtin_nodes = {"LoadImage", "PreviewImage", "SaveImage", "MaskToImage", "PreviewAny"}
 
         for workflow_path in EXAMPLES_DIR.glob("*_api*.json"):
             workflow = self._load_workflow(workflow_path)
@@ -1253,14 +1264,37 @@ class TestNodesHelpers(unittest.TestCase):
         self.assertTrue(preview_nodes)
         self.assertTrue(save_nodes)
 
-        segment_nodes = self._find_nodes_by_class_type(workflow, "YOLOE26PromptSegment")
-        self.assertTrue(segment_nodes)
-        segment_node_id, _ = segment_nodes[0]
-
         for _, node_def in preview_nodes + save_nodes:
-            self.assertTrue(
-                self._node_references_output(node_def, segment_node_id, 0),
-                "all_nodes_showcase_api.json: output sinks must reference annotated_image only",
+            images_input = node_def["inputs"]["images"]
+            self.assertIsInstance(images_input, list)
+            self.assertEqual(len(images_input), 2)
+
+            upstream_node_id = str(images_input[0])
+            upstream_class = self._workflow_node_class(workflow, upstream_node_id)
+            if upstream_class == "MaskToImage":
+                mask_input = workflow[upstream_node_id]["inputs"]["mask"]
+                self.assertIsInstance(mask_input, list)
+                self.assertEqual(len(mask_input), 2)
+                mask_source_class = self._workflow_node_class(
+                    workflow, str(mask_input[0])
+                )
+                self.assertIn(
+                    mask_source_class,
+                    {
+                        "YOLOE26ClassMasks",
+                        "YOLOE26InstanceMasks",
+                        "YOLOE26PromptSegment",
+                        "YOLOE26RefineMask",
+                        "YOLOE26SelectBestInstance",
+                    },
+                    "all_nodes_showcase_api.json: mask preview branch must originate from a YOLOE-26 node",
+                )
+                continue
+
+            self.assertEqual(
+                upstream_class,
+                "YOLOE26PromptSegment",
+                "all_nodes_showcase_api.json: image sinks must reference the annotated preview branch or a mask preview branch",
             )
 
     def test_practical_workflows_include_expected_primary_nodes_reference(self):
@@ -1293,7 +1327,7 @@ class TestNodesHelpers(unittest.TestCase):
     def test_example_workflow_matches_custom_node_interfaces_reference(self):
         workflow = self._load_workflow(ALL_NODES_SHOWCASE_PATH)
         custom_nodes = nodes.NODE_CLASS_MAPPINGS
-        builtin_nodes = {"LoadImage", "PreviewImage", "SaveImage"}
+        builtin_nodes = {"LoadImage", "PreviewImage", "SaveImage", "MaskToImage", "PreviewAny"}
 
         expected_workflow_inputs = {
             "YOLOE26LoadModel": {"model_name", "device", "auto_download"},

@@ -50,5 +50,41 @@
       "mask_threshold": 0.5,
       "imgsz": 640
     }
+  },
+  "5": {
+    "class_type": "MaskToImage",
+    "inputs": {
+      "mask": [
+        "3",
+        0
+      ]
+    }
+  },
+  "6": {
+    "class_type": "PreviewImage",
+    "inputs": {
+      "images": [
+        "5",
+        0
+      ]
+    }
+  },
+  "7": {
+    "class_type": "PreviewAny",
+    "inputs": {
+      "source": [
+        "4",
+        0
+      ]
+    }
+  },
+  "8": {
+    "class_type": "PreviewAny",
+    "inputs": {
+      "source": [
+        "4",
+        1
+      ]
+    }
   }
 }

@@ -54,5 +54,14 @@
       ],
       "filename_prefix": "ComfyUI-YOLOE26/practical_prompt_segment"
     }
+  },
+  "6": {
+    "class_type": "PreviewAny",
+    "inputs": {
+      "source": [
+        "3",
+        2
+      ]
+    }
   }
 }

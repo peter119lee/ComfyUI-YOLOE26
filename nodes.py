@@ -77,6 +77,47 @@ def _candidate_model_dirs() -> tuple[Path, ...]:
     )
 
 
+def _candidate_model_choices() -> list[str]:
+    available_local_names: set[str] = set()
+    for directory in _candidate_model_dirs():
+        if not directory.exists():
+            continue
+        for candidate in directory.glob("*.pt"):
+            if candidate.is_file():
+                available_local_names.add(candidate.name)
+
+    choices: list[str] = []
+    seen: set[str] = set()
+
+    for model_name in ALLOWED_AUTO_DOWNLOAD_MODELS:
+        status = "local" if model_name in available_local_names else "downloadable"
+        choices.append(f"{model_name} ({status})")
+        seen.add(model_name)
+
+    for model_name in sorted(available_local_names):
+        if model_name in seen:
+            continue
+        choices.append(f"{model_name} (local)")
+
+    return choices
+
+
+def _normalize_model_selection(model_name: str) -> str:
+    if not isinstance(model_name, str):
+        raise TypeError("model_name must be a string.")
+
+    name = model_name.strip()
+    if not name:
+        raise ValueError("model_name cannot be empty.")
+
+    if name.endswith(" (local)"):
+        return name.removesuffix(" (local)").strip()
+    if name.endswith(" (downloadable)"):
+        return name.removesuffix(" (downloadable)").strip()
+
+    return name
+
+
 def _device_choices() -> list[str]:
     choices = ["auto", "cpu"]
     if torch.cuda.is_available():
@@ -93,52 +134,6 @@ def _device_choices() -> list[str]:
         seen.add(choice)
         unique_choices.append(choice)
     return unique_choices
-
-
-def _validate_device(device: str) -> str:
-    if not isinstance(device, str):
-        raise TypeError("device must be a string.")
-    if device not in _device_choices():
-        raise ValueError(f"Unsupported device '{device}'.")
-    return device
-
-
-def _resolve_model_path(model_name: str) -> str:
-    """Resolve a local YOLOE model path from supported ComfyUI model directories."""
-    if not isinstance(model_name, str):
-        raise TypeError("model_name must be a string.")
-
-    name = model_name.strip()
-    if not name:
-        raise ValueError("model_name cannot be empty.")
-
-    if Path(name).name != name:
-        raise ValueError(
-            "model_name must be a file name only. Put the model file inside "
-            "ComfyUI/models/ultralytics/... or ComfyUI/models/yoloe/."
-        )
-
-    if not name.endswith(ALLOWED_MODEL_EXTENSIONS):
-        raise ValueError(
-            f"Unsupported model extension for '{name}'. Supported extensions: "
-            f"{', '.join(ALLOWED_MODEL_EXTENSIONS)}."
-        )
-
-    for directory in _candidate_model_dirs():
-        candidate = directory / name
-        if candidate.exists() and candidate.is_file():
-            return str(candidate)
-
-    raise FileNotFoundError(
-        f"Model '{name}' was not found in supported local ComfyUI model directories. "
-        "Place the weight file in ComfyUI/models/ultralytics/... or ComfyUI/models/yoloe/."
-    )
-
-
-def _create_yoloe(model_path: str):
-    from ultralytics import YOLOE
-
-    return YOLOE(model_path)
 
 
 def _runtime_model_path(runtime_model: object, fallback_name: str) -> str:
@@ -660,13 +655,13 @@ class YOLOE26LoadModel:
         return {
             "required": {
                 "model_name": (
-                    "STRING",
+                    _candidate_model_choices(),
                     {
-                        "default": "yoloe-26s-seg.pt",
+                        "default": "yoloe-26s-seg.pt (downloadable)",
                         "tooltip": (
-                            "Local YOLOE-26 model file name. Place the weight file in "
-                            "ComfyUI/models/ultralytics/segm/, ComfyUI/models/ultralytics/, "
-                            "or ComfyUI/models/yoloe/."
+                            "Choose a YOLOE-26 model preset. Labels marked local exist in supported "
+                            "ComfyUI model directories; labels marked downloadable can be fetched when "
+                            "auto_download is enabled."
                         ),
                     },
                 ),
@@ -704,16 +699,20 @@ class YOLOE26LoadModel:
         if _validate_device(device) != device:
             raise ValueError(f"Unsupported device '{device}'.")
 
+        selected_model_name = _normalize_model_selection(model_name)
+        if selected_model_name not in _candidate_model_choices():
+            raise ValueError(f"Unsupported model selection '{model_name}'.")
+
         try:
-            resolved = _resolve_model_path(model_name)
+            resolved = _resolve_model_path(selected_model_name)
         except FileNotFoundError as exc:
             if not auto_download:
                 raise FileNotFoundError(
-                    f"{exc} Enable auto_download to let Ultralytics try downloading '{model_name}', "
+                    f"{exc} Enable auto_download to let Ultralytics try downloading '{selected_model_name}', "
                     "or manually place the .pt file in a supported ComfyUI model directory."
                 ) from exc
 
-            download_model_name = _validate_auto_download_model_name(model_name)
+            download_model_name = _validate_auto_download_model_name(selected_model_name)
             download_config = ALLOWED_AUTO_DOWNLOAD_MODELS[download_model_name]
             try:
                 from ultralytics.utils.downloads import attempt_download_asset
