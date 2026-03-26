@@ -1,6 +1,8 @@
 # ComfyUI-YOLOE26
 
-由 Ultralytics YOLOE-26 驅動、可用於 ComfyUI 的 open-vocabulary prompt segmentation 自訂節點包。
+[English](README.md) | [简体中文](README.zh-CN.md)
+
+由 Ultralytics YOLOE-26 驱动、可用于 ComfyUI 的 open-vocabulary prompt segmentation 自定义节点包。
 
 這是一個 ComfyUI custom node pack，不是獨立應用程式。
 

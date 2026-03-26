@@ -1,5 +1,7 @@
 # ComfyUI-YOLOE26
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Open-vocabulary prompt segmentation nodes for ComfyUI powered by Ultralytics YOLOE-26.
 
 This is a ComfyUI custom node pack, not a standalone application.
