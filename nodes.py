@@ -77,7 +77,31 @@ def _candidate_model_dirs() -> tuple[Path, ...]:
     )
 
 
-def _resolve_model_path(model_name: str) -> str:
+def _candidate_model_choices() -> list[str]:
+    available_local_names: set[str] = set()
+    for directory in _candidate_model_dirs():
+        if not directory.exists():
+            continue
+        for candidate in directory.glob("*.pt"):
+            if candidate.is_file():
+                available_local_names.add(candidate.name)
+
+    choices: list[str] = []
+    seen: set[str] = set()
+
+    for model_name in ALLOWED_AUTO_DOWNLOAD_MODELS:
+        status = "local" if model_name in available_local_names else "downloadable"
+        choices.append(f"{model_name} ({status})")
+        seen.add(model_name)
+
+    for model_name in sorted(available_local_names):
+        if model_name in seen:
+            continue
+        choices.append(f"{model_name} (local)")
+
+    return choices
+
+
     """Resolve a local YOLOE model path from supported ComfyUI model directories."""
     if not isinstance(model_name, str):
         raise TypeError("model_name must be a string.")
