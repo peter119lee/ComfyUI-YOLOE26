@@ -136,6 +136,14 @@ def _device_choices() -> list[str]:
     return unique_choices
 
 
+def _validate_device(device: str) -> str:
+    if not isinstance(device, str):
+        raise TypeError("device must be a string.")
+    if device not in _device_choices():
+        raise ValueError(f"Unsupported device '{device}'.")
+    return device
+
+
 def _runtime_model_path(runtime_model: object, fallback_name: str) -> str:
     ckpt_path = getattr(runtime_model, "ckpt_path", None)
     if isinstance(ckpt_path, str) and ckpt_path:
