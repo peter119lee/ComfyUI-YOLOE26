@@ -144,6 +144,8 @@ Auto-download supports: `yoloe-26n-seg.pt`, `yoloe-26s-seg.pt`, `yoloe-26m-seg.p
 
 ## Example Workflows
 
+![All Nodes Showcase](examples/all_nodes_showcase.png)
+
 See `examples/` for workflow JSON files:
 
 | File | Description |

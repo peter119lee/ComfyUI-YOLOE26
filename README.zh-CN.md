@@ -144,6 +144,8 @@ pip install -r ComfyUI-YOLOE26/requirements.txt
 
 ## 示例流程
 
+![全部节点展示](examples/all_nodes_showcase.png)
+
 查看 `examples/` 目录中的流程 JSON 文件：
 
 | 文件 | 说明 |
