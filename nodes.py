@@ -150,6 +150,10 @@ def _persist_auto_downloaded_model(model_name: str, resolved_path: str) -> str:
     target_dir = _preferred_auto_download_target_dir(model_name)
     target_dir.mkdir(parents=True, exist_ok=True)
     target_path = target_dir / model_name
+    if not target_path.exists():
+        import shutil
+        shutil.copy2(source, target_path)
+    return str(target_path)
 
 
 def _create_yoloe(model_path: str):
