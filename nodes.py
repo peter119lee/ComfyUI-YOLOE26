@@ -86,10 +86,16 @@ def _candidate_model_choices() -> list[str]:
             if candidate.is_file():
                 available_local_names.add(candidate.name)
 
+    preferred_order = list(ALLOWED_AUTO_DOWNLOAD_MODELS.keys())
+    # Move yoloe-26s-seg.pt to first position as the recommended default
+    if "yoloe-26s-seg.pt" in preferred_order:
+        preferred_order.remove("yoloe-26s-seg.pt")
+        preferred_order.insert(0, "yoloe-26s-seg.pt")
+
     choices: list[str] = []
     seen: set[str] = set()
 
-    for model_name in ALLOWED_AUTO_DOWNLOAD_MODELS:
+    for model_name in preferred_order:
         status = "local" if model_name in available_local_names else "downloadable"
         choices.append(f"{model_name} ({status})")
         seen.add(model_name)
@@ -754,16 +760,23 @@ class YOLOE26LoadModel:
 
     @classmethod
     def INPUT_TYPES(cls):
+        choices = _candidate_model_choices()
+        default = choices[0] if choices else "yoloe-26s-seg.pt (downloadable)"
+        for c in choices:
+            if c == "yoloe-26s-seg.pt (local)":
+                default = c
+                break
         return {
             "required": {
                 "model_name": (
-                    _candidate_model_choices(),
+                    choices,
                     {
-                        "default": _candidate_model_choices()[0] if _candidate_model_choices() else "yoloe-26s-seg.pt (downloadable)",
+                        "default": default,
                         "tooltip": (
-                            "Choose a YOLOE-26 model preset. Labels marked local exist in supported "
-                            "ComfyUI model directories; labels marked downloadable can be fetched when "
-                            "auto_download is enabled."
+                            "Choose a YOLOE-26 model. Labels marked (local) exist in your ComfyUI model "
+                            "directories; labels marked (downloadable) will be fetched automatically when "
+                            "auto_download is enabled. After the first download, refresh ComfyUI "
+                            "(press F5) to see the model listed as (local)."
                         ),
                     },
                 ),
@@ -779,11 +792,10 @@ class YOLOE26LoadModel:
                 "auto_download": (
                     "BOOLEAN",
                     {
-                        "default": False,
+                        "default": True,
                         "tooltip": (
-                            "False = local-only loading from supported ComfyUI model directories. "
-                            "True = if the local weight file is missing, let Ultralytics try downloading "
-                            "the requested official model first."
+                            "True (recommended) = automatically download the model if not found locally. "
+                            "False = local-only; the model must already exist in a supported ComfyUI model directory."
                         ),
                     },
                 ),
@@ -796,7 +808,7 @@ class YOLOE26LoadModel:
     CATEGORY = "YOLOE26"
 
     def load_model(
-        self, model_name: str, device: str = "auto", auto_download: bool = False
+        self, model_name: str, device: str = "auto", auto_download: bool = True
     ):
         if _validate_device(device) != device:
             raise ValueError(f"Unsupported device '{device}'.")

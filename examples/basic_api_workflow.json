@@ -11,9 +11,9 @@
   "2": {
     "class_type": "YOLOE26LoadModel",
     "inputs": {
-      "model_name": "yoloe-26s-seg.pt",
+      "model_name": "yoloe-26s-seg.pt (downloadable)",
       "device": "auto",
-      "auto_download": false
+      "auto_download": true
     },
     "_meta": {
       "title": "YOLOE-26 Load Model"
