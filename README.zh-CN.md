@@ -61,6 +61,8 @@ pip install -r requirements.txt
 
 loader 采用 local-first 设计。请使用 `YOLOE-26 Load Model` 的下拉选单：只有当对应 `.pt` 文件已经存在于下列受支持的 ComfyUI model 目录中时，选项才会显示为 `(local)`；以 `(downloadable)` 结尾的选项表示这是官方 segmentation 预设，启用 `auto_download` 后才会尝试下载。
 
+> **首次自动下载说明：** 当你第一次使用 `(downloadable)` 模型执行 workflow 时，模型会自动下载并且 workflow 可以成功运行。但下拉选单的标签在重启 ComfyUI 之前仍会显示 `(downloadable)`。重启后（按 **F5** 或重新启动服务器），相同的模型会显示为 `(local)`。**第一次运行不需要重启**，workflow 可以直接跑通。
+
 当前 auto-download 限制：
 
 - 目前只支持 allowlisted 的官方 segmentation 权重：`yoloe-26n-seg.pt`、`yoloe-26s-seg.pt`、`yoloe-26m-seg.pt`、`yoloe-26l-seg.pt`、`yoloe-26x-seg.pt`

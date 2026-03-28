@@ -1,4 +1,5 @@
 {
+  "_readme": "NOTE: model_name uses '(downloadable)' label until ComfyUI is restarted after first download. The workflow will run successfully on first use — no restart needed before first run. After restart, the label changes to '(local)'.",
   "1": {
     "class_type": "LoadImage",
     "inputs": {

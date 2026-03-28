@@ -61,6 +61,8 @@ Only `ultralytics` is listed in `requirements.txt` to reduce the chance of confl
 
 The loader is local-first. Use the dropdown in `YOLOE-26 Load Model`: labels ending in `(local)` appear only when the exact `.pt` file already exists in one of the supported ComfyUI model folders below. Labels ending in `(downloadable)` are official segmentation presets that can be fetched when `auto_download` is enabled.
 
+> **First-time auto-download note:** When you run a workflow with a `(downloadable)` model for the first time, the model is downloaded and the workflow runs successfully. However, the dropdown label will still show `(downloadable)` until you restart ComfyUI (press **F5** or restart the server). After restart, the same model will appear as `(local)` in the dropdown. You do **not** need to restart before the first run — it will work either way.
+
 Current auto-download limitation:
 
 - only the allowlisted official segmentation weights are supported: `yoloe-26n-seg.pt`, `yoloe-26s-seg.pt`, `yoloe-26m-seg.pt`, `yoloe-26l-seg.pt`, `yoloe-26x-seg.pt`
