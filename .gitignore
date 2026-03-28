@@ -17,9 +17,13 @@ output/
 outputs/
 runs/
 
-# Internal development docs
+# Internal development files
 CLAUDE.md
 .plans/
 RELEASE_CHECKLIST_SHORT.md
 SMOKE_TEST_GUIDE.md
 TODO_RELEASE_AND_USAGE.md
+tests/
+scripts/
+conftest.py
+pytest.ini
