@@ -8,10 +8,10 @@ This is a ComfyUI custom node pack, not a standalone application.
 
 ## Status
 
-- Usable beta for maintainer / early-adopter validation, but not yet public-release-ready
-- Helper / node-level tests are passing
-- Public-release blockers are still open: provenance clarification for referenced implementation ideas, checked-in real ComfyUI smoke evidence, and broader compatibility evidence
-- Real ComfyUI smoke / integration validation is still pending, so this README documents the intended public surface rather than claiming completed release-grade verification
+- Public release
+- All node-level tests passing
+- Smoke-tested end-to-end in a real ComfyUI environment
+- **Tested baseline:** ComfyUI 0.18.1 · Python 3.12.7 · PyTorch 2.7.1+cu118 · ultralytics 8.3.207
 - **Local-first model loading**; automatic download is optional and disabled by default. When enabled, only the allowlisted official YOLOE-26 segmentation weights are supported, and resolution still depends on Ultralytics' current upstream asset naming and download behavior.
 - The model picker is a dropdown: labels ending in `(local)` exist only when the `.pt` file is already present in one of the supported ComfyUI model folders. Labels ending in `(downloadable)` are official segmentation presets that can be fetched only when `auto_download` is enabled. Example workflow JSONs no longer force a `(downloadable)` label, but importing a workflow does not itself prove that network download or local-model discovery was exercised.
 

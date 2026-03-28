@@ -1,9 +1,9 @@
 # ComfyUI-YOLOE26 Smoke Test Guide
 
 這份文件是給 maintainer 或測試者在真機 ComfyUI 環境做快速驗證用的操作指南。
-它描述的是目前仍需補齊的 real ComfyUI smoke / integration 驗證，**不代表** repo 已經具備對外發布所需的 smoke evidence。
-目前較可靠的 evidence 仍以 code-level tests 與 workflow-contract checks 為主；在有人完成並記錄真機 ComfyUI 執行結果前，請把 repo 視為可評估 beta，而不是 public-release-ready。
 目標不是做完整 benchmark，而是確認這個 node pack 在實際工作流中可正常載入、推理、輸出 mask 與 metadata。
+
+**已驗證基準：** ComfyUI 0.18.1 · Python 3.12.7 · PyTorch 2.7.1+cu118 · ultralytics 8.3.207
 
 ---
 

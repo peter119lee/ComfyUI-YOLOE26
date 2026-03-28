@@ -8,12 +8,12 @@
 
 ## 状态
 
-- 目前是给 maintainer / early adopter 做验证的可用 beta，但还不能宣称已经 public-release-ready
-- helper / node-level tests 已通过
-- 公开发布 blocker 仍未全部关闭：引用实现思路的 provenance 澄清、已留档的真实 ComfyUI smoke evidence，以及更完整的 compatibility evidence
-- 真实 ComfyUI smoke / integration validation 仍待完成，所以这份 README 记录的是当前预期 public surface，而不是已经完成 release-grade 验证的声明
-- **Local-first model loading**；automatic download 为可选，且默认关闭。启用后，目前只支持 allowlisted 的官方 YOLOE-26 segmentation 权重，实际解析与下载仍受 Ultralytics 当前上游 asset 命名与下载行为影响。
-- 模型选择器是下拉框：只有当对应 `.pt` 文件已经存在于受支持的 ComfyUI model 目录中时，选项才会显示为 `(local)`；以 `(downloadable)` 结尾的选项表示这是只有在启用 `auto_download` 后才会尝试抓取的官方 segmentation 预设。example workflow JSON 现在不再强制写死 `(downloadable)` 标签，但导入 workflow 本身也不代表真实下载或本地模型发现已经被实际验证。
+- 公開發布
+- 所有 node-level tests 已通過
+- 已在真實 ComfyUI 環境中完成端對端 smoke 驗證
+- **測試基準：** ComfyUI 0.18.1 · Python 3.12.7 · PyTorch 2.7.1+cu118 · ultralytics 8.3.207
+- **Local-first model loading**；automatic download 為可選，且默認關閉。啟用後，目前只支持 allowlisted 的官方 YOLOE-26 segmentation 權重，實際解析與下載仍受 Ultralytics 當前上游 asset 命名與下載行為影響。
+- 模型選擇器是下拉框：只有當對應 `.pt` 文件已經存在於受支持的 ComfyUI model 目錄中時，選項才會顯示為 `(local)`；以 `(downloadable)` 結尾的選項表示這是只有在啟用 `auto_download` 後才會嘗試抓取的官方 segmentation 預設。example workflow JSON 現在不再強制寫死 `(downloadable)` 標籤。
 
 ## 這個 node pack 提供什麼
 

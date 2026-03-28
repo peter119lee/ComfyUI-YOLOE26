@@ -831,17 +831,17 @@ class YOLOE26LoadModel:
             try:
                 from ultralytics.utils.downloads import attempt_download_asset
 
-                resolved = attempt_download_asset(
+                downloaded = attempt_download_asset(
                     download_model_name,
                     repo=download_config["repo"],
                     release=download_config["release"],
                 )
-                if not Path(resolved).exists():
+                if not Path(downloaded).exists():
                     raise FileNotFoundError(
                         f"Ultralytics did not return a downloadable path for '{download_model_name}'."
                     )
-                _verify_auto_downloaded_model(download_model_name, resolved)
-                resolved = _persist_auto_downloaded_model(download_model_name, resolved)
+                _verify_auto_downloaded_model(download_model_name, downloaded)
+                resolved = _persist_auto_downloaded_model(download_model_name, downloaded)
                 runtime_model = _create_yoloe(resolved)
             except Exception as download_exc:
                 raise RuntimeError(

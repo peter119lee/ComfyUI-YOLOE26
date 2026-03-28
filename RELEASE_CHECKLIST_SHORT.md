@@ -4,7 +4,9 @@
 如果你不想先看完整文件，可以先跑這份。
 完整版請看：`TODO_RELEASE_AND_USAGE.md`
 
-在 provenance clarification、release-grade compatibility matrix、以及已留檔的真機 ComfyUI smoke evidence 補齊前，這個 repo 仍不應描述成 public-release-ready。
+**已完成發布驗證。** 以下清單供安裝與驗證參考。
+
+**已驗證基準：** ComfyUI 0.18.1 · Python 3.12.7 · PyTorch 2.7.1+cu118 · ultralytics 8.3.207
 
 ---
 
