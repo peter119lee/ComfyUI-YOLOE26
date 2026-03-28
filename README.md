@@ -8,11 +8,12 @@ This is a ComfyUI custom node pack, not a standalone application.
 
 ## Status
 
-- Usable **beta / release candidate**
+- Usable beta for maintainer / early-adopter validation, but not yet public-release-ready
 - Helper / node-level tests are passing
-- Real ComfyUI smoke / integration validation is still recommended before wider public release
-- **Local-first model loading**; automatic download is optional and disabled by default. When enabled, the loader asks Ultralytics to resolve and download the requested official weight using its upstream model-loading behavior.
-- The model picker is a dropdown: labels ending in `(local)` already exist in supported ComfyUI model folders, and labels ending in `(downloadable)` are official presets that can be fetched when `auto_download` is enabled.
+- Public-release blockers are still open: provenance clarification for referenced implementation ideas, checked-in real ComfyUI smoke evidence, and broader compatibility evidence
+- Real ComfyUI smoke / integration validation is still pending, so this README documents the intended public surface rather than claiming completed release-grade verification
+- **Local-first model loading**; automatic download is optional and disabled by default. When enabled, only the allowlisted official YOLOE-26 segmentation weights are supported, and resolution still depends on Ultralytics' current upstream asset naming and download behavior.
+- The model picker is a dropdown: labels ending in `(local)` exist only when the `.pt` file is already present in one of the supported ComfyUI model folders. Labels ending in `(downloadable)` are official segmentation presets that can be fetched only when `auto_download` is enabled. Example workflow JSONs no longer force a `(downloadable)` label, but importing a workflow does not itself prove that network download or local-model discovery was exercised.
 
 ## What this node pack adds
 
@@ -58,7 +59,13 @@ Only `ultralytics` is listed in `requirements.txt` to reduce the chance of confl
 
 ### 2. Place a local YOLOE-26 model
 
-The loader is local-first. Use the dropdown in `YOLOE-26 Load Model`: labels ending in `(local)` already exist in supported ComfyUI model folders, and labels ending in `(downloadable)` are official presets that can be fetched when `auto_download` is enabled.
+The loader is local-first. Use the dropdown in `YOLOE-26 Load Model`: labels ending in `(local)` appear only when the exact `.pt` file already exists in one of the supported ComfyUI model folders below. Labels ending in `(downloadable)` are official segmentation presets that can be fetched when `auto_download` is enabled.
+
+Current auto-download limitation:
+
+- only the allowlisted official segmentation weights are supported: `yoloe-26n-seg.pt`, `yoloe-26s-seg.pt`, `yoloe-26m-seg.pt`, `yoloe-26l-seg.pt`, `yoloe-26x-seg.pt`
+- non-allowlisted names, non-seg presets, or renamed files are not part of the current auto-download contract
+- successful download also depends on Ultralytics continuing to resolve those official asset names the same way upstream
 
 Put your `.pt` file in one of these supported locations:
 
@@ -121,7 +128,7 @@ YOLOE-26 Load Model ----------/
 ```text
 YOLOE-26 Instance Masks
   ├-> instance_masks -----------\
-  └-> instance_metadata_json ----> YOLOE-26 Select Best Instance -> best_mask -> PreviewImage / SaveImage
+  └-> instance_metadata_json ----> YOLOE-26 Select Best Instance -> best_mask -> MaskToImage -> PreviewImage / SaveImage
 ```
 
 ### Refine an existing mask batch
@@ -129,14 +136,14 @@ YOLOE-26 Instance Masks
 ```text
 Any MASK-producing node
   -> YOLOE-26 Refine Mask
-  -> refined_masks -> PreviewImage / SaveImage
+  -> refined_masks -> MaskToImage -> PreviewImage / SaveImage
 ```
 
 ### Build one mask per prompt class
 
 ```text
 Load Image --------------------\
-Prompt String -------------------> YOLOE-26 Class Masks -> class_masks -> PreviewImage / SaveImage
+Prompt String -------------------> YOLOE-26 Class Masks -> class_masks -> MaskToImage -> PreviewImage / SaveImage
 YOLOE-26 Load Model ----------/
 ```
 
@@ -156,12 +163,12 @@ red apple, green bottle
 
 Loads and validates a local YOLOE-26 model file.
 Only load `.pt` files you trust.
-The model dropdown shows official presets as `(downloadable)` and existing files in supported ComfyUI model folders as `(local)`.
+The model dropdown shows official presets as `(downloadable)` and existing files in supported ComfyUI model folders as `(local)`. If a file that you expect to be local still appears as `(downloadable)`, check that the weight really lives in one of the supported ComfyUI model directories rather than elsewhere in the workspace.
 
 **Inputs**
 - `model_name`: local weight file name, for example `yoloe-26s-seg.pt`
 - `device`: `auto`, `cpu`, `cuda`, `cuda:N`, and `mps` when available
-- `auto_download`: `false` = local-only loading from supported ComfyUI model directories; `true` = if the local model is missing, let Ultralytics try downloading the requested official model first
+- `auto_download`: `false` = local-only loading from supported ComfyUI model directories; `true` = if the local model is missing, let Ultralytics try downloading the requested allowlisted official segmentation model first
 
 **Outputs**
 - `YOLOE_MODEL`
@@ -321,15 +328,15 @@ Notes:
 
 ## Example workflows
 
-`examples/` 中的所有 example 檔案，都是 **ComfyUI API-format workflows**，使用精簡的 `class_type` + `inputs` prompt 風格。
-它們不是完整的 UI-exported graph JSON 檔。
-如果你是透過 ComfyUI API 測試，請把它們當成 payload references 使用。
-如果你只是在 UI 中測試，請手動重建相同的 nodes 與參數。
+All files in `examples/` are **ComfyUI API-format workflows** using the compact `class_type` + `inputs` style.
+They are not full UI-exported graph JSON files.
+If you are testing through the ComfyUI API, use them as payload references.
+If you are testing only in the UI, rebuild the same nodes and parameters manually.
 
-Example workflows 分成兩類：
+At the current evidence level, treat the examples as follows:
 
-- **Runnable examples**：包含可直接預覽的 `IMAGE` branch，適合做 smoke test
-- **Reference/API examples**：展示 node wiring 與 API payload；`MASK` 輸出通常需要先接適當的 mask 可視化或轉換節點，不保證可直接接 `PreviewImage` / `SaveImage`
+- **Smoke-target examples**: JSON payloads whose graph shape matches the repo's current intended smoke path or visualization path
+- **Reference examples**: JSON payloads that document node wiring and downstream usage patterns; they still need real ComfyUI execution evidence before they should be treated as release-grade proof
 
 ### 1. Minimal getting-started
 
@@ -337,13 +344,14 @@ Start with:
 
 - `examples/basic_api_workflow.json`
 
-This is the smallest successful path for a first-run smoke test:
+This is the smallest documented path for a first-run smoke attempt:
 
 ```text
 LoadImage -> YOLOE26LoadModel -> YOLOE26PromptSegment -> PreviewImage
 ```
 
-It is the recommended Quick Start workflow when you only want to confirm that model loading, prompt segmentation, annotated-image preview, and merged-mask output work end-to-end.
+It is the recommended Quick Start workflow when you only want to confirm that model loading, prompt segmentation, annotated-image preview, and merged-mask output are wired end-to-end.
+It should still be treated as a smoke target to execute, not as already-proven public-release evidence.
 
 ### 2. Full node-pack showcase
 
@@ -361,26 +369,27 @@ This workflow includes all 7 custom nodes:
 - `YOLOE26RefineMask`
 - `YOLOE26SelectBestInstance`
 
-It also includes representative built-in output sinks for annotated image preview only.
-Use it when you want one API workflow that demonstrates the full node set and typical downstream wiring.
+It also includes representative built-in sinks and preview helpers, including `MaskToImage` branches for mask visualization.
+Use it as a coverage-oriented wiring reference for the whole node pack, not as evidence that every branch has already been smoke-validated in a real ComfyUI session.
 
-### 3. Real application workflows
+### 3. Practical workflows
 
 The practical examples are focused on common downstream use cases:
 
-| Example | What it's for | Main nodes | Expected output |
+| Example | What it's for | Main nodes | Current evidence level |
 | --- | --- | --- | --- |
-| `examples/basic_api_workflow.json` | Quick Start and first-run smoke testing | `YOLOE26LoadModel`, `YOLOE26PromptSegment`, `PreviewImage` | Annotated preview image from `annotated_image` |
-| `examples/all_nodes_showcase_api.json` | Full wiring reference for the whole node pack | All 7 custom nodes plus representative `PreviewImage` / `SaveImage` sinks for the annotated image branch only | Prompt-segment preview plus full node coverage |
-| `examples/practical_prompt_segment_api.json` | Basic prompt segmentation for inpainting, compositing, or cropping | `YOLOE26PromptSegment`, `PreviewImage`, `SaveImage` | Immediate annotated preview and saved prompt-segment result |
-| `examples/practical_best_instance_api.json` | API/reference workflow for selecting one best detected subject from per-instance results | `YOLOE26InstanceMasks`, `YOLOE26SelectBestInstance` | `best_mask`, `best_instance_metadata_json`, and `selected_mask_index` |
-| `examples/practical_class_masks_api.json` | API/reference workflow for routing one merged result per prompt class | `YOLOE26ClassMasks` | `class_masks`, `class_metadata_json`, and `output_mask_count` |
-| `examples/practical_refine_mask_api.json` | Post-process an existing mask batch without re-running detection | `YOLOE26PromptSegment`, `YOLOE26RefineMask`, `PreviewImage` | Annotated preview plus `refined_masks` / `refined_metadata_json` |
-| `examples/practical_detection_metadata_api.json` | Metadata-driven automation with a visible smoke-test branch | `YOLOE26DetectionMetadata`, `YOLOE26PromptSegment`, `PreviewImage` | `metadata_json` plus annotated preview output |
-| `examples/practical_batch_multi_class_api.json` | API/reference workflow for multi-class prompt routing and metadata alignment checks | `YOLOE26ClassMasks`, `YOLOE26DetectionMetadata` | class-mask batch plus detection metadata for comparison |
+| `examples/basic_api_workflow.json` | Quick Start and first-run smoke target | `YOLOE26LoadModel`, `YOLOE26PromptSegment`, `PreviewImage` | Documented smoke target; real ComfyUI evidence still pending in release docs |
+| `examples/all_nodes_showcase_api.json` | Full wiring reference for the whole node pack | All 7 custom nodes plus representative preview/save helpers and `MaskToImage` visualization branches | Wiring/reference example, not release-proof smoke evidence |
+| `examples/practical_prompt_segment_api.json` | Basic prompt segmentation for inpainting, compositing, or cropping | `YOLOE26PromptSegment`, `PreviewImage`, `SaveImage` | Smoke-target example for annotated-image output |
+| `examples/practical_best_instance_api.json` | Practical best-instance selection with mask visualization via `MaskToImage` | `YOLOE26InstanceMasks`, `YOLOE26SelectBestInstance`, `MaskToImage` | Reference workflow pending real ComfyUI smoke confirmation |
+| `examples/practical_class_masks_api.json` | Practical class-mask routing with mask visualization via `MaskToImage` | `YOLOE26ClassMasks`, `MaskToImage` | Reference workflow pending real ComfyUI smoke confirmation |
+| `examples/practical_refine_mask_api.json` | Post-process an existing mask batch without re-running detection | `YOLOE26PromptSegment`, `YOLOE26RefineMask`, `MaskToImage`, `PreviewImage` | Smoke-target/reference hybrid; still needs checked-in real ComfyUI evidence |
+| `examples/practical_detection_metadata_api.json` | Metadata-driven automation with a visible annotated preview branch | `YOLOE26DetectionMetadata`, `YOLOE26PromptSegment`, `PreviewImage` | Smoke-target example for metadata plus preview |
+| `examples/practical_batch_multi_class_api.json` | Multi-class prompt routing and metadata alignment checks with mask visualization via `MaskToImage` | `YOLOE26ClassMasks`, `YOLOE26DetectionMetadata`, `MaskToImage` | Reference workflow pending real ComfyUI smoke confirmation |
 
-`basic_api_workflow.json` is the recommended entry point for Quick Start.
-If you want to inspect every custom node in one place, go to `all_nodes_showcase_api.json`.
+`basic_api_workflow.json` is still the recommended Quick Start entry point.
+If you want the fastest sanity smoke, start there.
+If you want one compact workflow that exercises the whole custom node pack, use `all_nodes_showcase_api.json`.
 
 ## Validation and release docs
 
@@ -390,14 +399,18 @@ For practical setup, smoke testing, and release checks, see:
 - `RELEASE_CHECKLIST_SHORT.md`
 - `TODO_RELEASE_AND_USAGE.md`
 
+Workflow import note:
+- example workflows use ComfyUI `LoadImage` nodes, so importing them may still require you to choose or remap an input image in the ComfyUI UI.
+- `basic_api_workflow.json` no longer forces the explicit `upload` flag, but a `LoadImage` node still represents a user-provided image input rather than a bundled repo asset.
+
 ## Current limitations
 
 - The loader still accepts only `.pt` model names and local-first resolution from supported ComfyUI model directories
-- Automatic model download depends on Ultralytics upstream model availability, network access, local write permissions, and the current upstream resolution behavior for official YOLOE-26 weights
+- Automatic model download is limited to the allowlisted official YOLOE-26 segmentation weights and depends on Ultralytics upstream model availability, network access, local write permissions, and the current upstream resolution behavior for those official assets
 - Metadata outputs are JSON strings rather than a custom ComfyUI structured type
 - `YOLOE-26 Instance Masks` returns a placeholder zero mask when no detections are found and reports `count = 0`
 - `YOLOE-26 Class Masks` always returns one mask per prompt class for each input image; masks are all-zero when a class is not detected
-- The repo should still be validated in real ComfyUI workflows before broad public release
+- Real ComfyUI smoke evidence, compatibility matrix work, and LICENSE / provenance confirmation are still pending, so the repo should not yet be described as fully public-release-ready
 
 ## Troubleshooting
 
@@ -408,9 +421,11 @@ For practical setup, smoke testing, and release checks, see:
 - If you only need the mask, you can ignore the JSON outputs.
 - For batch inputs, inspect the returned JSON metadata to map each output mask back to its source image.
 
-## Attribution status
+## Attribution and licensing status
 
 This repository references implementation ideas associated with a `prompt_segment.py` script attributed to [spawner1145](https://github.com/spawner1145).
-The exact upstream repository, file URL, and license for that script have not yet been independently verified from this repo.
-Until that provenance is confirmed, this repository does **not** include a project-level `LICENSE` file.
-[Ultralytics](https://github.com/ultralytics/ultralytics) remains a separate third-party dependency with its own license terms.
+The exact upstream repository, file URL, and license context for that script have not yet been independently verified from this repo, so provenance notes remain important.
+
+This repository now includes a project-level `LICENSE` file for the original source code and documentation contained here.
+That MIT license applies only to this repository's original code and docs; it does **not** relicense third-party dependencies, model weights, downloaded assets, or upstream projects.
+[Ultralytics](https://github.com/ultralytics/ultralytics) remains a separate third-party dependency with its own license terms, and official YOLOE / Ultralytics model weights remain subject to their own upstream terms.

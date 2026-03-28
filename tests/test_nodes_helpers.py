@@ -1,6 +1,8 @@
 import importlib.util
 import json
 import sys
+import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -13,10 +15,16 @@ MODULE_PATH = Path(__file__).resolve().parents[1] / "nodes.py"
 EXAMPLES_DIR = Path(__file__).resolve().parents[1] / "examples"
 WORKFLOW_PATH = EXAMPLES_DIR / "basic_api_workflow.json"
 ALL_NODES_SHOWCASE_PATH = EXAMPLES_DIR / "all_nodes_showcase_api.json"
+INIT_PATH = Path(__file__).resolve().parents[1] / "__init__.py"
+CI_PATH = Path(__file__).resolve().parents[1] / "scripts" / "run_ci.py"
 spec = importlib.util.spec_from_file_location("comfyui_yoloe26_nodes", MODULE_PATH)
 nodes = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = nodes
 spec.loader.exec_module(nodes)
+ci_spec = importlib.util.spec_from_file_location("comfyui_yoloe26_ci", CI_PATH)
+run_ci = importlib.util.module_from_spec(ci_spec)
+sys.modules[ci_spec.name] = run_ci
+ci_spec.loader.exec_module(run_ci)
 
 
 class FakeMasks:
@@ -113,8 +121,40 @@ class TestNodesHelpers(unittest.TestCase):
 
     @staticmethod
     def _node_references_output(node_def: dict, upstream_node_id: str, output_index: int) -> bool:
-        target_reference = [upstream_node_id, output_index]
-        return any(value == target_reference for value in node_def["inputs"].values())
+        return any(
+            isinstance(value, list)
+            and len(value) == 2
+            and str(value[0]) == str(upstream_node_id)
+            and value[1] == output_index
+            for value in node_def.get("inputs", {}).values()
+        )
+
+    @staticmethod
+    def _node_registration_signature(node_class: type) -> tuple[object, ...]:
+        input_types = getattr(node_class, "INPUT_TYPES", None)
+        resolved_input_types = input_types() if callable(input_types) else None
+        return (
+            node_class.__name__,
+            resolved_input_types,
+            getattr(node_class, "RETURN_TYPES", None),
+            getattr(node_class, "RETURN_NAMES", None),
+            getattr(node_class, "FUNCTION", None),
+            getattr(node_class, "CATEGORY", None),
+            getattr(node_class, "OUTPUT_NODE", False),
+        )
+
+    def _assert_node_mapping_surface_matches(self, actual_mapping: dict, expected_mapping: dict) -> None:
+        self.assertEqual(set(actual_mapping.keys()), set(expected_mapping.keys()))
+
+        for node_name, actual_class in actual_mapping.items():
+            expected_class = expected_mapping[node_name]
+            self.assertTrue(isinstance(actual_class, type), node_name)
+            self.assertTrue(isinstance(expected_class, type), node_name)
+            self.assertEqual(
+                self._node_registration_signature(actual_class),
+                self._node_registration_signature(expected_class),
+                node_name,
+            )
 
     def test_load_model_input_types_exposes_model_choice_list(self):
         input_types = nodes.YOLOE26LoadModel.INPUT_TYPES()
@@ -124,8 +164,23 @@ class TestNodesHelpers(unittest.TestCase):
         self.assertIn("yoloe-26m-seg.pt (downloadable)", model_type)
         self.assertIn("yoloe-26l-seg.pt (downloadable)", model_type)
         self.assertIn("yoloe-26x-seg.pt (downloadable)", model_type)
-        self.assertEqual(model_config["default"], "yoloe-26s-seg.pt (downloadable)")
+        self.assertEqual(model_config["default"], model_type[0])
         self.assertIn("tooltip", model_config)
+
+    def test_load_model_input_types_prefers_local_default_when_available(self):
+        with patch.object(
+            nodes,
+            "_candidate_model_choices",
+            return_value=[
+                "yoloe-26s-seg.pt (local)",
+                "yoloe-26m-seg.pt (downloadable)",
+            ],
+        ):
+            input_types = nodes.YOLOE26LoadModel.INPUT_TYPES()
+
+        model_type, model_config = input_types["required"]["model_name"]
+        self.assertEqual(model_type[0], "yoloe-26s-seg.pt (local)")
+        self.assertEqual(model_config["default"], "yoloe-26s-seg.pt (local)")
 
     def test_load_model_raises_file_not_found_when_model_missing_and_auto_download_disabled(
         self,
@@ -155,30 +210,43 @@ class TestNodesHelpers(unittest.TestCase):
                     nodes, "_verify_auto_downloaded_model"
                 ) as mock_verify:
                     with patch.object(
-                        nodes, "_create_yoloe", return_value=runtime_model
-                    ) as mock_create:
-                        with patch(
-                            "pathlib.Path.exists", return_value=True
-                        ) as mock_exists:
+                        nodes,
+                        "_persist_auto_downloaded_model",
+                        return_value="L:/ComfyUI/models/ultralytics/segm/yoloe-26s-seg.pt",
+                    ) as mock_persist:
+                        with patch.object(
+                            nodes, "_create_yoloe", return_value=runtime_model
+                        ) as mock_create:
                             with patch(
-                                "ultralytics.utils.downloads.attempt_download_asset",
-                                return_value="L:/downloaded/yoloe-26s-seg.pt",
-                            ) as mock_attempt:
-                                (bundle,) = nodes.YOLOE26LoadModel().load_model(
-                                    "yoloe-26s-seg.pt (downloadable)", auto_download=True
-                                )
+                                "pathlib.Path.exists", return_value=True
+                            ) as mock_exists:
+                                with patch(
+                                    "ultralytics.utils.downloads.attempt_download_asset",
+                                    return_value="L:/downloaded/yoloe-26s-seg.pt",
+                                ) as mock_attempt:
+                                    (bundle,) = nodes.YOLOE26LoadModel().load_model(
+                                        "yoloe-26s-seg.pt (downloadable)", auto_download=True
+                                    )
 
         mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
         mock_validate.assert_called_once_with("yoloe-26s-seg.pt")
         mock_attempt.assert_called_once_with(
             "yoloe-26s-seg.pt", repo="ultralytics/assets", release="v8.4.0"
         )
-        mock_create.assert_called_once_with("L:/downloaded/yoloe-26s-seg.pt")
+        mock_persist.assert_called_once_with(
+            "yoloe-26s-seg.pt", "L:/downloaded/yoloe-26s-seg.pt"
+        )
+        mock_create.assert_called_once_with(
+            "L:/ComfyUI/models/ultralytics/segm/yoloe-26s-seg.pt"
+        )
         mock_verify.assert_called_once_with(
             "yoloe-26s-seg.pt", "L:/downloaded/yoloe-26s-seg.pt"
         )
         self.assertIs(bundle["model"], runtime_model)
-        self.assertEqual(bundle["model_path"], "L:/downloaded/yoloe-26s-seg.pt")
+        self.assertEqual(
+            bundle["model_path"],
+            "L:/ComfyUI/models/ultralytics/segm/yoloe-26s-seg.pt",
+        )
         self.assertEqual(bundle["device"], "auto")
 
     def test_load_model_does_not_download_when_model_already_exists_even_if_auto_download_enabled(
@@ -209,18 +277,19 @@ class TestNodesHelpers(unittest.TestCase):
                 "_validate_auto_download_model_name",
                 return_value="yoloe-26s-seg.pt",
             ):
-                with patch.object(
-                    nodes,
-                    "_create_yoloe",
+                with patch(
+                    "ultralytics.utils.downloads.attempt_download_asset",
                     side_effect=RuntimeError("network disabled"),
-                ) as mock_create:
+                ) as mock_attempt:
                     with self.assertRaises(RuntimeError) as exc:
                         nodes.YOLOE26LoadModel().load_model(
                             "yoloe-26s-seg.pt (downloadable)", auto_download=True
                         )
 
         mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
-        mock_create.assert_called_once_with("yoloe-26s-seg.pt")
+        mock_attempt.assert_called_once_with(
+            "yoloe-26s-seg.pt", repo="ultralytics/assets", release="v8.4.0"
+        )
         self.assertIn("auto-download", str(exc.exception))
         self.assertIn("yoloe-26s-seg.pt", str(exc.exception))
 
@@ -236,17 +305,22 @@ class TestNodesHelpers(unittest.TestCase):
                 with patch.object(
                     nodes, "_verify_auto_downloaded_model"
                 ) as mock_verify:
-                    with patch.object(nodes, "_create_yoloe", return_value=runtime_model):
-                        with patch(
-                            "pathlib.Path.exists", return_value=True
-                        ) as mock_exists:
+                    with patch.object(
+                        nodes,
+                        "_persist_auto_downloaded_model",
+                        return_value="L:/cache/yoloe-26s-seg.pt",
+                    ):
+                        with patch.object(nodes, "_create_yoloe", return_value=runtime_model):
                             with patch(
-                                "ultralytics.utils.downloads.attempt_download_asset",
-                                return_value="L:/cache/yoloe-26s-seg.pt",
-                            ) as mock_attempt:
-                                (bundle,) = nodes.YOLOE26LoadModel().load_model(
-                                    "yoloe-26s-seg.pt", auto_download=True
-                                )
+                                "pathlib.Path.exists", return_value=True
+                            ) as mock_exists:
+                                with patch(
+                                    "ultralytics.utils.downloads.attempt_download_asset",
+                                    return_value="L:/cache/yoloe-26s-seg.pt",
+                                ) as mock_attempt:
+                                    (bundle,) = nodes.YOLOE26LoadModel().load_model(
+                                        "yoloe-26s-seg.pt", auto_download=True
+                                    )
 
         mock_attempt.assert_called_once_with(
             "yoloe-26s-seg.pt", repo="ultralytics/assets", release="v8.4.0"
@@ -265,15 +339,20 @@ class TestNodesHelpers(unittest.TestCase):
             with patch.object(
                 nodes, "_validate_auto_download_model_name", return_value="yoloe-26s-seg.pt"
             ):
-                with patch.object(nodes, "_create_yoloe", return_value=runtime_model):
-                    with patch.object(nodes, "_verify_auto_downloaded_model") as mock_verify:
-                        with patch(
-                            "ultralytics.utils.downloads.attempt_download_asset",
-                            return_value="yoloe-26s-seg.pt",
-                        ) as mock_attempt:
-                            (bundle,) = nodes.YOLOE26LoadModel().load_model(
-                                "yoloe-26s-seg.pt", auto_download=True
-                            )
+                with patch.object(nodes, "_verify_auto_downloaded_model") as mock_verify:
+                    with patch.object(
+                        nodes,
+                        "_persist_auto_downloaded_model",
+                        return_value="yoloe-26s-seg.pt",
+                    ):
+                        with patch.object(nodes, "_create_yoloe", return_value=runtime_model):
+                            with patch(
+                                "ultralytics.utils.downloads.attempt_download_asset",
+                                return_value="yoloe-26s-seg.pt",
+                            ) as mock_attempt:
+                                (bundle,) = nodes.YOLOE26LoadModel().load_model(
+                                    "yoloe-26s-seg.pt", auto_download=True
+                                )
 
         mock_attempt.assert_called_once_with(
             "yoloe-26s-seg.pt", repo="ultralytics/assets", release="v8.4.0"
@@ -303,6 +382,91 @@ class TestNodesHelpers(unittest.TestCase):
         mock_create.assert_called_once_with("L:/models/yoloe-26s-seg.pt")
         self.assertIn("Failed to validate YOLOE-26 model", str(exc.exception))
 
+    def test_package_init_direct_file_import_preserves_real_mappings_when_package_semantics_exist(self):
+        module_name = "comfyui_yoloe26_init_direct_import"
+        spec = importlib.util.spec_from_file_location(module_name, INIT_PATH)
+        init_module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = init_module
+
+        try:
+            spec.loader.exec_module(init_module)
+        finally:
+            sys.modules.pop(module_name, None)
+
+        expected_node_names = {
+            "YOLOE26LoadModel",
+            "YOLOE26PromptSegment",
+            "YOLOE26DetectionMetadata",
+            "YOLOE26InstanceMasks",
+            "YOLOE26ClassMasks",
+            "YOLOE26RefineMask",
+            "YOLOE26SelectBestInstance",
+        }
+
+        self.assertSetEqual(set(init_module.NODE_CLASS_MAPPINGS), expected_node_names)
+        self.assertSetEqual(
+            set(init_module.NODE_DISPLAY_NAME_MAPPINGS), expected_node_names
+        )
+        self._assert_node_mapping_surface_matches(
+            init_module.NODE_CLASS_MAPPINGS,
+            nodes.NODE_CLASS_MAPPINGS,
+        )
+        self.assertEqual(
+            init_module.NODE_DISPLAY_NAME_MAPPINGS,
+            nodes.NODE_DISPLAY_NAME_MAPPINGS,
+        )
+
+        load_model_node_cls = init_module.NODE_CLASS_MAPPINGS["YOLOE26LoadModel"]
+        self.assertTrue(isinstance(load_model_node_cls, type))
+        self.assertEqual(load_model_node_cls.__name__, "YOLOE26LoadModel")
+        self.assertTrue(load_model_node_cls.__module__.endswith(".nodes"))
+        self.assertTrue(hasattr(load_model_node_cls(), "load_model"))
+        self.assertEqual(
+            init_module.__all__,
+            ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"],
+        )
+
+    def test_package_init_uses_empty_fallback_only_when_executed_without_package_context(self):
+        module_name = "comfyui_yoloe26_init_pkgless_exec"
+        source = INIT_PATH.read_text(encoding="utf-8")
+        init_module = types.ModuleType(module_name)
+        init_module.__file__ = str(INIT_PATH)
+        init_module.__package__ = ""
+        init_module.__name__ = module_name
+        init_module.__all__ = []
+        sys.modules[module_name] = init_module
+
+        try:
+            exec(compile(source, str(INIT_PATH), "exec"), init_module.__dict__)
+        finally:
+            sys.modules.pop(module_name, None)
+
+        self.assertEqual(init_module.NODE_CLASS_MAPPINGS, {})
+        self.assertEqual(init_module.NODE_DISPLAY_NAME_MAPPINGS, {})
+        self.assertEqual(
+            init_module.__all__,
+            ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"],
+        )
+
+    def test_package_init_raises_runtime_error_for_production_registration_failure(self):
+        module_name = "comfyui_yoloe26_init_pkg_import"
+        spec = importlib.util.spec_from_file_location(
+            module_name,
+            INIT_PATH,
+            submodule_search_locations=[str(INIT_PATH.parent)],
+        )
+        init_module = importlib.util.module_from_spec(spec)
+        init_module.__package__ = module_name
+        sys.modules[module_name] = init_module
+
+        with patch.dict(sys.modules, {f"{module_name}.nodes": None}, clear=False):
+            with self.assertRaises(RuntimeError) as exc:
+                spec.loader.exec_module(init_module)
+
+        sys.modules.pop(module_name, None)
+        self.assertIn("production import/registration failure", str(exc.exception))
+        self.assertIsInstance(exc.exception.__cause__, ImportError)
+
     def test_all_example_api_workflows_parse_and_reference_known_nodes_smoke(self):
         custom_nodes = nodes.NODE_CLASS_MAPPINGS
         builtin_nodes = {"LoadImage", "PreviewImage", "SaveImage", "MaskToImage", "PreviewAny"}
@@ -318,6 +482,30 @@ class TestNodesHelpers(unittest.TestCase):
                     class_type in custom_nodes or class_type in builtin_nodes,
                     f"{workflow_path.name}: unknown class_type {class_type}",
                 )
+
+    def test_ci_validate_requirements_pin_accepts_tested_minimum_floor(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            requirements_path = Path(temp_dir) / "requirements.txt"
+            requirements_path.write_text("ultralytics>=8.3.200\n", encoding="utf-8")
+
+            self.assertEqual(run_ci.validate_requirements_pin(requirements_path), [])
+
+    def test_ci_validate_requirements_pin_rejects_missing_tested_minimum_floor(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            requirements_path = Path(temp_dir) / "requirements.txt"
+            requirements_path.write_text("ultralytics>=8.3.100\n", encoding="utf-8")
+
+            failures = run_ci.validate_requirements_pin(requirements_path)
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("tested minimum ultralytics floor", failures[0])
+
+    def test_ci_build_steps_include_compile_and_pytest(self):
+        steps = run_ci.build_ci_steps()
+
+        self.assertEqual([step.name for step in steps], ["Compile Python sources", "Run pytest suite"])
+        self.assertEqual(steps[0].command[1:3], ("-m", "compileall"))
+        self.assertEqual(steps[1].command[1:3], ("-m", "pytest"))
 
     def test_all_nodes_showcase_workflow_covers_all_custom_nodes_smoke(self):
         workflow = self._load_workflow(ALL_NODES_SHOWCASE_PATH)

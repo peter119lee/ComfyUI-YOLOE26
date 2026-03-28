@@ -134,6 +134,24 @@ def _resolve_model_path(model_name: str) -> str:
     )
 
 
+def _preferred_auto_download_target_dir(model_name: str) -> Path:
+    if model_name.endswith("-seg.pt"):
+        return _candidate_model_dirs()[0]
+    return _candidate_model_dirs()[2]
+
+
+def _persist_auto_downloaded_model(model_name: str, resolved_path: str) -> str:
+    source = Path(resolved_path)
+    if not source.exists() or not source.is_file():
+        raise FileNotFoundError(
+            f"Downloaded model path '{resolved_path}' does not exist as a file."
+        )
+
+    target_dir = _preferred_auto_download_target_dir(model_name)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / model_name
+
+
 def _create_yoloe(model_path: str):
     from ultralytics import YOLOE
 
@@ -737,7 +755,7 @@ class YOLOE26LoadModel:
                 "model_name": (
                     _candidate_model_choices(),
                     {
-                        "default": "yoloe-26s-seg.pt (downloadable)",
+                        "default": _candidate_model_choices()[0] if _candidate_model_choices() else "yoloe-26s-seg.pt (downloadable)",
                         "tooltip": (
                             "Choose a YOLOE-26 model preset. Labels marked local exist in supported "
                             "ComfyUI model directories; labels marked downloadable can be fetched when "
@@ -807,6 +825,7 @@ class YOLOE26LoadModel:
                         f"Ultralytics did not return a downloadable path for '{download_model_name}'."
                     )
                 _verify_auto_downloaded_model(download_model_name, resolved)
+                resolved = _persist_auto_downloaded_model(download_model_name, resolved)
                 runtime_model = _create_yoloe(resolved)
             except Exception as download_exc:
                 raise RuntimeError(

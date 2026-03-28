@@ -2,8 +2,7 @@
   "1": {
     "class_type": "LoadImage",
     "inputs": {
-      "image": "example.png",
-      "upload": "image"
+      "image": "example.png"
     },
     "_meta": {
       "title": "Load Image"
@@ -12,7 +11,7 @@
   "2": {
     "class_type": "YOLOE26LoadModel",
     "inputs": {
-      "model_name": "yoloe-26s-seg.pt (downloadable)",
+      "model_name": "yoloe-26s-seg.pt",
       "device": "auto",
       "auto_download": false
     },

@@ -1,6 +1,8 @@
 # ComfyUI-YOLOE26 Smoke Test Guide
 
 這份文件是給 maintainer 或測試者在真機 ComfyUI 環境做快速驗證用的操作指南。
+它描述的是目前仍需補齊的 real ComfyUI smoke / integration 驗證，**不代表** repo 已經具備對外發布所需的 smoke evidence。
+目前較可靠的 evidence 仍以 code-level tests 與 workflow-contract checks 為主；在有人完成並記錄真機 ComfyUI 執行結果前，請把 repo 視為可評估 beta，而不是 public-release-ready。
 目標不是做完整 benchmark，而是確認這個 node pack 在實際工作流中可正常載入、推理、輸出 mask 與 metadata。
 
 ---
@@ -17,7 +19,7 @@
 - [ ] 本機環境已有可用的 `torch`
 - [ ] 本機環境已有可用的 `numpy`
 - [ ] 本機環境已有可用的 `cv2`
-- [ ] `yoloe-26s-seg.pt` 或其他 YOLOE-26 權重已放在支援目錄
+- [ ] `yoloe-26s-seg.pt` 或其他 YOLOE-26 權重已放在支援目錄，或你明確要驗證 allowlisted auto-download
 - [ ] ComfyUI input 目錄中已有至少一張測試圖，例如 `example.png`
 
 支援模型路徑：
@@ -26,6 +28,12 @@
 - `ComfyUI/models/ultralytics/bbox/`
 - `ComfyUI/models/ultralytics/`
 - `ComfyUI/models/yoloe/`
+
+auto-download 限制也要先確認：
+
+- 目前只支援 allowlisted 的官方 segmentation 權重：`yoloe-26n-seg.pt`、`yoloe-26s-seg.pt`、`yoloe-26m-seg.pt`、`yoloe-26l-seg.pt`、`yoloe-26x-seg.pt`
+- 其他名稱、非 segmentation 權重、或重新命名後的檔案，不屬於目前的 auto-download contract
+- example JSON 中若出現 `(downloadable)` 標籤，只代表下拉選單選項可顯示；不代表已完成真機下載 smoke 驗證
 
 ---
 
@@ -58,7 +66,7 @@
 ```text
 Load Image --------------------\
                                 -> YOLOE-26 Prompt Segment -> PreviewImage
-YOLOE-26 Load Model ----------/                           \-> SaveImage（可選）
+YOLOE-26 Load Model ----------/                           \-> mask -> downstream or MaskToImage
 ```
 
 ### 建議參數
@@ -66,6 +74,7 @@ YOLOE-26 Load Model ----------/                           \-> SaveImage（可選
 #### YOLOE-26 Load Model
 - `model_name`: `yoloe-26s-seg.pt`
 - `device`: `auto`
+- `auto_download`: `false`（除非你這次是刻意驗證 allowlisted auto-download）
 
 #### YOLOE-26 Prompt Segment
 - `prompt`: `person`
@@ -96,17 +105,27 @@ YOLOE-26 Load Model ----------/                           \-> SaveImage（可選
 - [ ] 把 `mask_threshold` 提高，確認 mask 面積可能縮小
 - [ ] 改 `prompt` 為多類別，例如 `person, car, dog`
 
+### 建議留證
+
+本輪 smoke 建議至少保存：
+
+- [ ] ComfyUI 啟動成功截圖或 log 片段
+- [ ] 最小 workflow 執行成功截圖
+- [ ] 使用的 ComfyUI / Python / torch / ultralytics 版本資訊
+- [ ] 使用的是本地模型還是 allowlisted auto-download
+
 ---
 
-## 4. Example workflow smoke test
+## 4. Example workflow smoke plan
 
-repo 內附的 examples 都是 **API-format workflows**，不是完整的 UI-exported graph：
+repo 內附的 examples 都是 **API-format workflows**，不是完整的 UI-exported graph。
+在目前 release docs 的證據等級下，請把它們分成「待執行的 smoke target」與「wiring/reference example」，不要把任何單一 example 直接當成已完成的 public-release proof。
 
-### 4.1 Minimal smoke test
+### 4.1 Minimal smoke target
 
 - `examples/basic_api_workflow.json`
 
-這是最小成功路徑，覆蓋 4 個節點：
+這是最小 smoke target，覆蓋 4 個節點：
 
 ```text
 LoadImage -> YOLOE26LoadModel -> YOLOE26PromptSegment -> PreviewImage
@@ -119,7 +138,7 @@ LoadImage -> YOLOE26LoadModel -> YOLOE26PromptSegment -> PreviewImage
 - [ ] `Prompt Segment` 有輸出 merged `MASK`
 - [ ] `iou` / `max_det` / `mask_threshold` 參數有被正確接受
 
-### 4.2 All-nodes showcase reference
+### 4.2 All-nodes wiring reference
 
 - `examples/all_nodes_showcase_api.json`
 
@@ -133,7 +152,8 @@ LoadImage -> YOLOE26LoadModel -> YOLOE26PromptSegment -> PreviewImage
 - [ ] `YOLOE26RefineMask`
 - [ ] `YOLOE26SelectBestInstance`
 
-這份 workflow 的用途是核對 node coverage 與合法 wiring，不要求所有 `MASK` 輸出都能在 repo 內直接接到 built-in image sink。
+這份 workflow 的用途是核對 node coverage 與合法 wiring。
+它實際上也包含 `MaskToImage` 視覺化分支，所以不需要再聲稱所有 `MASK` 都不能在 repo 內接到 image sink；比較準確的說法是，這份範例的重點不是證明每個分支都已完成 release-grade smoke，而是提供 coverage-oriented wiring reference。
 執行後確認：
 
 - [ ] `Prompt Segment` 的 annotated `IMAGE` branch 可用
@@ -142,29 +162,29 @@ LoadImage -> YOLOE26LoadModel -> YOLOE26PromptSegment -> PreviewImage
 - [ ] `Class Masks` 有輸出 `class_masks`
 - [ ] `Refine Mask` 有輸出 `refined_masks`
 - [ ] `Select Best Instance` 有輸出 `best_mask`
-- [ ] 沒有把 `MASK` 輸出直接接到 `PreviewImage` / `SaveImage`
+- [ ] `MaskToImage` 視覺化分支能正確把 mask 轉成可預覽的 `IMAGE`
 
-### 4.3 Real application smoke set
+### 4.3 Practical workflow set
 
-下列 practical examples 建議至少抽測 2 份，公開發布前可全測：
+下列 practical examples 建議至少抽測 2 份；在真實證據補齊前，請把它們視為 smoke targets 或 wiring references，而不是已完成的對外 showcase：
 
-| file name | scenario focus | main nodes |
+| file name | scenario focus | current doc role |
 | --- | --- | --- |
-| `practical_prompt_segment_api.json` | merged mask for inpainting / cropping / compositing | `YOLOE26PromptSegment` |
-| `practical_best_instance_api.json` | API/reference workflow for selecting one best subject | `YOLOE26InstanceMasks`, `YOLOE26SelectBestInstance` |
-| `practical_class_masks_api.json` | API/reference workflow for class-wise routing | `YOLOE26ClassMasks` |
-| `practical_refine_mask_api.json` | post-process masks while keeping a visible annotated branch | `YOLOE26PromptSegment`, `YOLOE26RefineMask` |
-| `practical_detection_metadata_api.json` | metadata-driven automation | `YOLOE26DetectionMetadata`, `YOLOE26PromptSegment` |
-| `practical_batch_multi_class_api.json` | multi-class prompt + metadata alignment checks | `YOLOE26ClassMasks`, `YOLOE26DetectionMetadata` |
+| `practical_prompt_segment_api.json` | merged mask for inpainting / cropping / compositing | smoke target for annotated-image path |
+| `practical_best_instance_api.json` | best-subject selection with mask visualization via `MaskToImage` | reference workflow pending real ComfyUI smoke evidence |
+| `practical_class_masks_api.json` | class-wise routing with mask visualization via `MaskToImage` | reference workflow pending real ComfyUI smoke evidence |
+| `practical_refine_mask_api.json` | post-process masks while keeping visible preview branches | smoke-target/reference hybrid |
+| `practical_detection_metadata_api.json` | metadata-driven automation plus annotated preview | smoke target for metadata + preview |
+| `practical_batch_multi_class_api.json` | multi-class prompt + metadata alignment checks with `MaskToImage` | reference workflow pending real ComfyUI smoke evidence |
 
-每份 practical workflow 至少確認其主節點輸出可用，且用途與檔名相符。
-若你需要可視化 `MASK`，請接使用者環境中已確認相容的 downstream node；repo 內目前不假設任何特定 built-in `MASK -> IMAGE` converter。
+每份 workflow 至少確認其主節點輸出可用，且用途與檔名相符。
+若你需要可視化 `MASK`，請確認 workflow 經由 `MaskToImage` 或你環境中已驗證相容的 downstream converter，而不是直接接 `PreviewImage` / `SaveImage`。
 
 ### 執行前確認
 
 - [ ] `example.png` 已放到 ComfyUI input 目錄
-- [ ] `yoloe-26s-seg.pt` 已放到支援模型路徑
-- [ ] ComfyUI 可正常讀取這兩個檔案
+- [ ] `yoloe-26s-seg.pt` 已放到支援模型路徑，或你這次是刻意驗證 allowlisted auto-download
+- [ ] ComfyUI 可正常讀取這些檔案
 - [ ] 理解這些 JSON 是 API payload 參考，不是 UI graph 匯入檔
 
 ---
@@ -178,6 +198,7 @@ LoadImage -> YOLOE26LoadModel -> YOLOE26PromptSegment -> PreviewImage
 - [ ] `device=auto` 可用
 - [ ] 如果有 GPU，`cuda` 或 `cuda:0` 可用
 - [ ] 如果是 Apple Silicon，`mps` 可用
+- [ ] 若測 `auto_download=true`，只有 allowlisted 官方 segmentation 權重會被接受
 
 ### 5.2 YOLOE-26 Prompt Segment
 
@@ -249,32 +270,35 @@ LoadImage -> YOLOE26LoadModel -> YOLOE26PromptSegment -> PreviewImage
 
 - [ ] 模型檔是否真的存在
 - [ ] 模型檔名是否輸入正確
-- [ ] `ultralytics` 版本是否符合 `>=8.3.200`
+- [ ] `ultralytics` 版本是否符合 `>=8.3.200,<8.5.0`
 - [ ] `from ultralytics import YOLOE` 是否仍可用
 - [ ] ComfyUI 使用的 Python 環境是否正確
 - [ ] prompt 是否為空字串或只有逗號
 - [ ] 是否選了不可用的 `device`
 - [ ] GPU 雖可見，但實際推理是否失敗
+- [ ] 若測 `auto_download`，是否使用 allowlisted 官方 segmentation 權重
+- [ ] 若測 `auto_download`，Ultralytics 是否仍能解析到相同上游 asset
 
 ---
 
 ## 8. 通過標準
 
-如果下面項目都成立，可以視為 smoke test 通過：
+如果下面項目都成立，可以視為這一輪 smoke evidence 已補齊到可交付狀態：
 
 - [ ] 7 個節點都能載入
 - [ ] 最小 UI 流程可跑
 - [ ] `basic_api_workflow.json` 可跑
-- [ ] `practical_prompt_segment_api.json` 可跑
-- [ ] `practical_detection_metadata_api.json` 可跑
-- [ ] `all_nodes_showcase_api.json` 可作為 reference 並符合合法 wiring
+- [ ] `practical_prompt_segment_api.json` 或 `practical_detection_metadata_api.json` 至少一份可跑
+- [ ] `all_nodes_showcase_api.json` 已核對 wiring，且 mask preview branch 經由 `MaskToImage`
 - [ ] `Prompt Segment` 可輸出 image / mask / count
 - [ ] `Detection Metadata` 可輸出可解析 JSON
 - [ ] `Instance Masks` / `Class Masks` 行為符合預期
 - [ ] `Refine Mask` 與 `Select Best Instance` 的 contract 可在 workflow 內驗證
-- [ ] 至少 2 份 practical examples 驗證成功
+- [ ] 已保存足夠的截圖 / log / version info 作為真實 ComfyUI 證據
 
-如果 smoke test 通過，但你還要公開發布，下一步請看：
+如果這些條目尚未全部打勾，就不應在 release 文件中把 smoke 描述成已完成。
+
+下一步請看：
 
 - `RELEASE_CHECKLIST_SHORT.md`
 - `TODO_RELEASE_AND_USAGE.md`
