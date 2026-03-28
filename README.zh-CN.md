@@ -412,7 +412,7 @@ Workflow 匯入提示：
 - metadata outputs 目前是 JSON strings，而不是自訂的 ComfyUI structured type
 - `YOLOE-26 Instance Masks` 在無 detections 時會回傳 placeholder zero mask，並回報 `count = 0`
 - `YOLOE-26 Class Masks` 會對每張輸入圖片的每個 prompt class 都回傳一個 mask；若 class 未被偵測到，mask 會是全零
-- 真實 ComfyUI smoke evidence、compatibility matrix 工作，以及 LICENSE / provenance 確認仍待完成，所以這個 repo 目前不應被描述為已經 fully public-release-ready
+- 已在真實 ComfyUI 環境（ComfyUI 0.18.1 · Python 3.12.7 · PyTorch 2.7.1+cu118 · ultralytics 8.3.207）完成 smoke 驗證
 
 ## 疑難排解
 
@@ -425,8 +425,7 @@ Workflow 匯入提示：
 
 ## Attribution and licensing status
 
-這個 repository 參考了與 `prompt_segment.py` script 相關的實作想法，該 script 歸因於 [spawner1145](https://github.com/spawner1145)。
-目前尚未從這個 repo 獨立驗證其確切上游 repository、檔案 URL、與完整 license context，因此 provenance 說明仍然重要。
+這個 repository 參考了與 `prompt_segment.py` script 相關的實作想法，該 script 由 [spawner1145](https://github.com/spawner1145) 撰寫，並已獲得其明確授權使用。
 
 這個 repository 現在已提供 project-level `LICENSE`，用於本 repo 內的原創 source code 與 documentation。
 該 MIT license **只**適用於本 repository 內的原始程式碼與文件；它**不會**重新授權 third-party dependencies、model weights、downloaded assets、或任何 upstream project。

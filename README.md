@@ -380,7 +380,7 @@ The practical examples are focused on common downstream use cases:
 
 | Example | What it's for | Main nodes | Current evidence level |
 | --- | --- | --- | --- |
-| `examples/basic_api_workflow.json` | Quick Start and first-run smoke target | `YOLOE26LoadModel`, `YOLOE26PromptSegment`, `PreviewImage` | Documented smoke target; real ComfyUI evidence still pending in release docs |
+| `examples/basic_api_workflow.json` | Quick Start and first-run smoke target | `YOLOE26LoadModel`, `YOLOE26PromptSegment`, `PreviewImage` | Validated smoke target |
 | `examples/all_nodes_showcase_api.json` | Full wiring reference for the whole node pack | All 7 custom nodes plus representative preview/save helpers and `MaskToImage` visualization branches | Wiring/reference example, not release-proof smoke evidence |
 | `examples/practical_prompt_segment_api.json` | Basic prompt segmentation for inpainting, compositing, or cropping | `YOLOE26PromptSegment`, `PreviewImage`, `SaveImage` | Smoke-target example for annotated-image output |
 | `examples/practical_best_instance_api.json` | Practical best-instance selection with mask visualization via `MaskToImage` | `YOLOE26InstanceMasks`, `YOLOE26SelectBestInstance`, `MaskToImage` | Reference workflow pending real ComfyUI smoke confirmation |
@@ -412,7 +412,7 @@ Workflow import note:
 - Metadata outputs are JSON strings rather than a custom ComfyUI structured type
 - `YOLOE-26 Instance Masks` returns a placeholder zero mask when no detections are found and reports `count = 0`
 - `YOLOE-26 Class Masks` always returns one mask per prompt class for each input image; masks are all-zero when a class is not detected
-- Real ComfyUI smoke evidence, compatibility matrix work, and LICENSE / provenance confirmation are still pending, so the repo should not yet be described as fully public-release-ready
+- Smoke-tested in a real ComfyUI environment (ComfyUI 0.18.1 · Python 3.12.7 · PyTorch 2.7.1+cu118 · ultralytics 8.3.207)
 
 ## Troubleshooting
 
@@ -425,8 +425,7 @@ Workflow import note:
 
 ## Attribution and licensing status
 
-This repository references implementation ideas associated with a `prompt_segment.py` script attributed to [spawner1145](https://github.com/spawner1145).
-The exact upstream repository, file URL, and license context for that script have not yet been independently verified from this repo, so provenance notes remain important.
+This repository references implementation ideas associated with a `prompt_segment.py` script written by [spawner1145](https://github.com/spawner1145), used with explicit permission.
 
 This repository now includes a project-level `LICENSE` file for the original source code and documentation contained here.
 That MIT license applies only to this repository's original code and docs; it does **not** relicense third-party dependencies, model weights, downloaded assets, or upstream projects.
