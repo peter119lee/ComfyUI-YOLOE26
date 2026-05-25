@@ -1,0 +1,26 @@
+[project]
+name = "comfyui-yoloe26"
+description = "Open-vocabulary prompt segmentation for ComfyUI powered by YOLOE-26."
+version = "0.1.0"
+license = { text = "AGPL-3.0" }
+requires-python = ">=3.10"
+readme = "README.md"
+dynamic = ["dependencies"]
+classifiers = [
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Graphics",
+]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[project.urls]
+Repository = "https://github.com/peter119lee/ComfyUI-YOLOE26"
+"Bug Tracker" = "https://github.com/peter119lee/ComfyUI-YOLOE26/issues"
+"Upstream YOLOE" = "https://github.com/THU-MIG/yoloe"
+
+[tool.comfy]
+PublisherId = "peter119lee"
+DisplayName = "YOLOE-26 Open-Vocabulary Segmentation"
+Icon = ""
