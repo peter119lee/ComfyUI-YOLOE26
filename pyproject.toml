@@ -1,8 +1,10 @@
 [project]
 name = "comfyui-yoloe26"
 description = "Open-vocabulary prompt segmentation for ComfyUI powered by YOLOE-26."
-version = "0.1.0"
-license = { text = "AGPL-3.0" }
+version = "0.2.0"
+# Matches the repository LICENSE file. Ultralytics itself is AGPL-3.0 and is a
+# separate runtime dependency with its own license terms.
+license = { text = "MIT" }
 requires-python = ">=3.10"
 readme = "README.md"
 dynamic = ["dependencies"]
