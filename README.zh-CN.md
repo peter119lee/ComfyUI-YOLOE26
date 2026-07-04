@@ -55,12 +55,18 @@ pip install -r ComfyUI-YOLOE26/requirements.txt
 加载并验证 YOLOE-26 模型。
 
 **输入：**
-- `model_name` — 模型文件名（下拉菜单显示可用选项）
+- `model_name` — 模型文件名（下拉菜单显示官方模型和本地 `.pt` 文件）
 - `device` — `auto`、`cpu`、`cuda`、`cuda:N` 或 `mps`
 - `auto_download` — 自动下载缺失的模型（默认：true）
+- `offload_to_cpu` — 每个分割节点执行完后把模型移回 CPU，为扩散模型腾出显存（默认：false）
 
 **输出：**
 - `model` — YOLOE_MODEL，供其他节点使用
+
+**说明：**
+- 自动下载的权重在加载前会进行 SHA256 校验。
+- 首次文本提示推理会通过 Ultralytics 下载 MobileCLIP 文本编码器（约 250 MB），并可能自动安装其 CLIP 依赖，因此首次运行需要网络（以及 `git`）。
+- 旧版本保存的、`model_name` 带有 `(local)`/`(downloadable)` 后缀的工作流仍然可以正常运行。
 
 ### YOLOE-26 Prompt Segment
 
@@ -140,7 +146,9 @@ pip install -r ComfyUI-YOLOE26/requirements.txt
 - `ComfyUI/models/ultralytics/`
 - `ComfyUI/models/yoloe/`
 
-自动下载支持：`yoloe-26n-seg.pt`、`yoloe-26s-seg.pt`、`yoloe-26m-seg.pt`、`yoloe-26l-seg.pt`、`yoloe-26x-seg.pt`
+通过 `extra_model_paths.yaml` 在 `ultralytics`、`ultralytics_segm`、`ultralytics_bbox` 或 `yoloe` 键下配置的目录也会被识别。添加文件后，在 ComfyUI 中按 `r` 刷新模型列表。
+
+自动下载支持：`yoloe-26n-seg.pt`、`yoloe-26s-seg.pt`、`yoloe-26m-seg.pt`、`yoloe-26l-seg.pt`、`yoloe-26x-seg.pt`（直接下载到 `models/ultralytics/segm/` 并进行 SHA256 校验）
 
 ## 示例流程
 
@@ -156,6 +164,8 @@ pip install -r ComfyUI-YOLOE26/requirements.txt
 | `practical_best_instance_api.json` | 最佳实例选择 |
 | `practical_class_masks_api.json` | 按类别路由遮罩 |
 | `practical_refine_mask_api.json` | 遮罩后处理 |
+| `practical_detection_metadata_api.json` | 结构化检测元数据 |
+| `practical_batch_multi_class_api.json` | 批量输入与多类别提示 |
 
 ## 提示格式
 
@@ -172,14 +182,22 @@ red apple, green bottle
 - ComfyUI
 - Python 3.10+
 - PyTorch
-- ultralytics >= 8.3.200
+- ultralytics >= 8.3.200, < 9.0.0
 
 ## 测试环境
 
-- ComfyUI 0.18.1
-- Python 3.12.7
-- PyTorch 2.7.1+cu118
-- ultralytics 8.3.207
+2026-07-04 完成端到端验证：
+
+- ComfyUI 0.26.2（Windows 11，NVIDIA RTX 3090）
+- Python 3.11.9
+- PyTorch 2.8.0+cu128
+- ultralytics 8.4.26（单元测试同时在 8.4.41 下运行）
+
+## 行为说明
+
+- 遮罩以原图分辨率生成（`retina_masks`），与检测框以及下游重绘/合成节点精确对齐。
+- 较新的 Ultralytics 版本返回的遮罩已经二值化，此时 `mask_threshold` 低于 1.0 的取值不会产生额外效果。
+- 当元数据跨多张输入图片时，`Select Best Instance` 会在整个批次范围内选出单个最佳遮罩。
 
 ## 常见问题
 
@@ -187,8 +205,15 @@ red apple, green bottle
 - 检查 `.pt` 文件是否在支持的模型目录中
 - 如使用 `auto_download`，请确认网络连接正常
 
+**下载后 SHA256 校验失败？**
+- 文件会被自动删除，可重试一次。如果所有模型都校验失败，可能是 Ultralytics 重新发布了资源文件——请更新本节点包，或手动下载权重放入支持的模型目录。
+
+**首次文本提示运行很慢或离线失败？**
+- 首次提示推理会下载 MobileCLIP 文本编码器（约 250 MB），并可能安装 Ultralytics 的 CLIP 依赖（需要 `git`）。请先在有网络的环境跑一次。
+
 **推理失败？**
 - 如果显存不足，尝试降低 `imgsz`
+- 与扩散模型共用显存时，可在 Load Model 节点开启 `offload_to_cpu`
 - 确保你的 ultralytics 版本支持 `from ultralytics import YOLOE`
 
 **没有检测结果？**
