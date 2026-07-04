@@ -8,12 +8,33 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
+import os
 from pathlib import Path
 
 import cv2
 import numpy as np
 import torch
+
+try:  # ComfyUI runtime integration (absent in unit tests / standalone usage)
+    import folder_paths as _folder_paths
+except ImportError:
+    _folder_paths = None
+
+try:
+    from comfy import model_management as _model_management
+    from comfy import utils as _comfy_utils
+except ImportError:
+    _model_management = None
+    _comfy_utils = None
+
+LOGGER = logging.getLogger(__name__)
+
+TEXT_ENCODER_DOWNLOAD_NOTE = (
+    "Note: the first text-prompt inference downloads the MobileCLIP text encoder "
+    "(~250 MB) through Ultralytics and requires network access."
+)
 
 MAX_PROMPT_LENGTH = 512
 MAX_PROMPT_CLASSES = 20
@@ -22,31 +43,35 @@ DEFAULT_MASK_THRESHOLD = 0.5
 DEFAULT_IOU = 0.7
 DEFAULT_MAX_DET = 300
 ALLOWED_MODEL_EXTENSIONS = (".pt",)
+# SHA256 digests verified 2026-07-04 against fresh downloads AND the GitHub
+# release-asset digests reported by the API. Ultralytics has replaced assets
+# on this release tag in-place before; if verification starts failing for all
+# models, the digests below likely need to be refreshed the same way.
 ALLOWED_AUTO_DOWNLOAD_MODELS = {
     "yoloe-26n-seg.pt": {
         "repo": "ultralytics/assets",
         "release": "v8.4.0",
-        "sha256": "f432978449803654a11b386754a7edc96187dca39ea622925b781d3d36a975b8",
+        "sha256": "1741c1f8da3cea47e2c01829c334a50dc0b9bbd05e685b90a3ce84fae32c8c1b",
     },
     "yoloe-26s-seg.pt": {
         "repo": "ultralytics/assets",
         "release": "v8.4.0",
-        "sha256": "6f62bc7ed9f86056112c383e9b85023291a3929086af26b1a8762335fe39a17d",
+        "sha256": "48f24206bc8680d60cbbfa296b0140da849669b9515058b72f5a945142df0654",
     },
     "yoloe-26m-seg.pt": {
         "repo": "ultralytics/assets",
         "release": "v8.4.0",
-        "sha256": "214afb47524eebd80add0d8aa32f6731b2b540ff0ea42c57a20b9d76069fc756",
+        "sha256": "585f5ec9028fd358035da8d860c27c56be285a795cba2076fba536a4391c2c83",
     },
     "yoloe-26l-seg.pt": {
         "repo": "ultralytics/assets",
         "release": "v8.4.0",
-        "sha256": "a9413bf3f15772c223a03bbedd71b79af5822f830e80aa1b51b1a469e65927b1",
+        "sha256": "a612d2d505f24e14d87ec82d688b823b6cb600646664f16125ce6c84ce360da9",
     },
     "yoloe-26x-seg.pt": {
         "repo": "ultralytics/assets",
         "release": "v8.4.0",
-        "sha256": "6f55ef8985bf91dbea7918200d187494048d14421723e795ee730980aba0f3c2",
+        "sha256": "d08d390a08f98195f7c87807839fe4ff93a5491645fef1bc3bf0700efafdd639",
     },
 }
 REFINE_METHODS = (
@@ -60,24 +85,91 @@ REFINE_METHODS = (
 )
 SELECTION_MODES = ("highest_confidence", "largest_area", "confidence_then_area")
 
+# ComfyUI folder_paths keys and the subdirectories they map to under models/.
+# The ultralytics* keys match ComfyUI-Impact-Subpack conventions so both packs
+# share the same registered directories.
+_MODEL_FOLDER_LAYOUT: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("ultralytics_segm", ("ultralytics", "segm")),
+    ("ultralytics_bbox", ("ultralytics", "bbox")),
+    ("ultralytics", ("ultralytics",)),
+    ("yoloe", ("yoloe",)),
+)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
+def _fallback_comfy_models_root() -> Path:
+    """Best-effort ComfyUI models root for when folder_paths is unavailable."""
+    return Path(__file__).resolve().parents[2] / "models"
+
+
+def _register_model_folders() -> None:
+    """Register YOLOE model directories with ComfyUI's folder_paths registry."""
+    if _folder_paths is None:
+        return
+    try:
+        models_root = _folder_paths.models_dir
+        for folder_key, subdirs in _MODEL_FOLDER_LAYOUT:
+            _folder_paths.add_model_folder_path(
+                folder_key, os.path.join(models_root, *subdirs)
+            )
+    except Exception as exc:  # pragma: no cover - defensive against ComfyUI API drift
+        LOGGER.warning("ComfyUI-YOLOE26: failed to register model folders: %s", exc)
+
+
+_register_model_folders()
+
+
 def _candidate_model_dirs() -> tuple[Path, ...]:
-    """Return supported local model directories inside ComfyUI."""
-    comfy_base = Path(__file__).resolve().parents[2]
-    return (
-        comfy_base / "models" / "ultralytics" / "segm",
-        comfy_base / "models" / "ultralytics" / "bbox",
-        comfy_base / "models" / "ultralytics",
-        comfy_base / "models" / "yoloe",
-    )
+    """Return supported local model directories.
+
+    When running inside ComfyUI this uses the folder_paths registry, which
+    includes user-configured extra_model_paths.yaml entries. Outside ComfyUI
+    (unit tests, standalone usage) it falls back to directories relative to
+    this file assuming a standard custom_nodes layout.
+    """
+    dirs: list[Path] = []
+    seen: set[str] = set()
+
+    def _append(path: Path) -> None:
+        key = os.path.normcase(str(path))
+        if key not in seen:
+            seen.add(key)
+            dirs.append(path)
+
+    if _folder_paths is not None:
+        for folder_key, _subdirs in _MODEL_FOLDER_LAYOUT:
+            try:
+                registered = _folder_paths.get_folder_paths(folder_key)
+            except Exception as exc:
+                LOGGER.debug(
+                    "ComfyUI-YOLOE26: folder_paths lookup failed for '%s': %s",
+                    folder_key,
+                    exc,
+                )
+                registered = []
+            for entry in registered:
+                _append(Path(entry))
+        models_root = Path(_folder_paths.models_dir)
+    else:
+        models_root = _fallback_comfy_models_root()
+
+    for _folder_key, subdirs in _MODEL_FOLDER_LAYOUT:
+        _append(models_root.joinpath(*subdirs))
+
+    return tuple(dirs)
 
 
 def _candidate_model_choices() -> list[str]:
+    """Return dropdown choices as plain file names.
+
+    Values intentionally carry no availability suffix: suffixed values baked
+    into saved workflows break ComfyUI combo validation once a model's local
+    status changes.
+    """
     available_local_names: set[str] = set()
     for directory in _candidate_model_dirs():
         if not directory.exists():
@@ -87,24 +179,13 @@ def _candidate_model_choices() -> list[str]:
                 available_local_names.add(candidate.name)
 
     preferred_order = list(ALLOWED_AUTO_DOWNLOAD_MODELS.keys())
-    # Move yoloe-26s-seg.pt to first position as the recommended default
+    # Keep yoloe-26s-seg.pt first as the recommended default
     if "yoloe-26s-seg.pt" in preferred_order:
         preferred_order.remove("yoloe-26s-seg.pt")
         preferred_order.insert(0, "yoloe-26s-seg.pt")
 
-    choices: list[str] = []
-    seen: set[str] = set()
-
-    for model_name in preferred_order:
-        status = "local" if model_name in available_local_names else "downloadable"
-        choices.append(f"{model_name} ({status})")
-        seen.add(model_name)
-
-    for model_name in sorted(available_local_names):
-        if model_name in seen:
-            continue
-        choices.append(f"{model_name} (local)")
-
+    choices = list(preferred_order)
+    choices.extend(sorted(available_local_names - set(preferred_order)))
     return choices
 
 
@@ -141,25 +222,41 @@ def _resolve_model_path(model_name: str) -> str:
 
 
 def _preferred_auto_download_target_dir(model_name: str) -> Path:
+    if _folder_paths is not None:
+        models_root = Path(_folder_paths.models_dir)
+    else:
+        models_root = _fallback_comfy_models_root()
     if model_name.endswith("-seg.pt"):
-        return _candidate_model_dirs()[0]
-    return _candidate_model_dirs()[2]
+        return models_root / "ultralytics" / "segm"
+    return models_root / "ultralytics"
 
 
-def _persist_auto_downloaded_model(model_name: str, resolved_path: str) -> str:
-    source = Path(resolved_path)
-    if not source.exists() or not source.is_file():
-        raise FileNotFoundError(
-            f"Downloaded model path '{resolved_path}' does not exist as a file."
-        )
+def _download_model_to_target(model_name: str) -> str:
+    """Download an allowlisted model directly into the preferred model directory.
 
+    Passing the full target path to attempt_download_asset avoids the previous
+    behavior of downloading into the process working directory (the ComfyUI
+    root) and leaving a stray copy behind after persisting.
+    """
+    from ultralytics.utils.downloads import attempt_download_asset
+
+    download_config = ALLOWED_AUTO_DOWNLOAD_MODELS[model_name]
     target_dir = _preferred_auto_download_target_dir(model_name)
     target_dir.mkdir(parents=True, exist_ok=True)
     target_path = target_dir / model_name
-    if not target_path.exists():
-        import shutil
-        shutil.copy2(source, target_path)
-    return str(target_path)
+
+    downloaded = Path(
+        attempt_download_asset(
+            str(target_path),
+            repo=download_config["repo"],
+            release=download_config["release"],
+        )
+    )
+    if not downloaded.exists() or not downloaded.is_file():
+        raise FileNotFoundError(
+            f"Ultralytics did not produce a downloaded file for '{model_name}' at '{downloaded}'."
+        )
+    return str(downloaded)
 
 
 def _create_yoloe(model_path: str):
@@ -221,23 +318,6 @@ def _validate_device(device: str) -> str:
     return device
 
 
-def _runtime_model_path(runtime_model: object, fallback_name: str) -> str:
-    ckpt_path = getattr(runtime_model, "ckpt_path", None)
-    if isinstance(ckpt_path, str) and ckpt_path:
-        return ckpt_path
-
-    inner_model = getattr(runtime_model, "model", None)
-    pt_path = getattr(inner_model, "pt_path", None)
-    if isinstance(pt_path, str) and pt_path:
-        return pt_path
-
-    model_name = getattr(runtime_model, "model_name", None)
-    if isinstance(model_name, str) and model_name:
-        return model_name
-
-    return fallback_name
-
-
 def _validate_auto_download_model_name(model_name: str) -> str:
     name = model_name.strip()
     if name not in ALLOWED_AUTO_DOWNLOAD_MODELS:
@@ -262,9 +342,15 @@ def _verify_auto_downloaded_model(model_name: str, resolved_path: str) -> None:
 
     actual = _sha256_file(resolved_path)
     if actual != expected:
+        # Remove the unverified file so a later run cannot silently load it
+        # as a trusted local model.
+        Path(resolved_path).unlink(missing_ok=True)
         raise RuntimeError(
             f"Downloaded YOLOE-26 model '{model_name}' failed SHA256 verification. "
-            f"Expected {expected}, got {actual}."
+            f"Expected {expected}, got {actual}. The file was removed. "
+            "If this happens for every model, Ultralytics may have republished the "
+            "release assets; update this node pack or download the weights manually "
+            "into a supported ComfyUI model directory."
         )
 
 
@@ -407,11 +493,79 @@ def _build_predict_kwargs(
         "imgsz": imgsz,
         "max_det": max_det,
         "verbose": False,
+        # Native-resolution masks. Without this, Ultralytics returns masks in the
+        # letterboxed inference space (including padding), and resizing them
+        # directly to the original image size shifts and squashes the masks for
+        # any aspect ratio that required padding.
+        "retina_masks": True,
     }
     if device != "auto":
         predict_kwargs["device"] = device
 
     return predict_kwargs
+
+
+def _new_progress_bar(total: int):
+    """Create a ComfyUI progress bar when running inside ComfyUI, else None."""
+    if _comfy_utils is None or total < 1:
+        return None
+    try:
+        return _comfy_utils.ProgressBar(total)
+    except Exception:  # pragma: no cover - progress display must never break inference
+        return None
+
+
+def _raise_if_interrupted() -> None:
+    """Honor ComfyUI's cancel button between batch items."""
+    if _model_management is not None:
+        _model_management.throw_exception_if_processing_interrupted()
+
+
+def _maybe_offload_model(model: object) -> None:
+    """Move the model to CPU after execution when the bundle requests it."""
+    if not isinstance(model, dict) or not model.get("offload_to_cpu"):
+        return
+
+    runtime_model = model.get("model")
+    try:
+        if callable(getattr(runtime_model, "to", None)):
+            runtime_model.to("cpu")
+        elif isinstance(getattr(runtime_model, "model", None), torch.nn.Module):
+            runtime_model.model.to("cpu")
+        else:
+            LOGGER.warning(
+                "ComfyUI-YOLOE26: offload_to_cpu is enabled but the loaded model "
+                "does not support .to(); skipping offload."
+            )
+            return
+        if _model_management is not None:
+            _model_management.soft_empty_cache()
+        elif torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception as exc:  # pragma: no cover - offload is best-effort
+        LOGGER.warning("ComfyUI-YOLOE26: failed to offload model to CPU: %s", exc)
+
+
+def _configure_prompt_classes(yoloe, classes: list[str], model_path: str) -> None:
+    """Configure prompt classes once per node execution.
+
+    set_classes computes text embeddings, which is expensive and, on first use,
+    downloads the MobileCLIP text encoder through Ultralytics — so it must not
+    run once per image in a batch, and it is skipped entirely when the model is
+    already configured with the same classes.
+    """
+    if getattr(yoloe, "_yoloe26_active_classes", None) == classes:
+        return
+
+    model_name = Path(model_path).name
+    try:
+        yoloe.set_classes(classes)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to configure YOLOE-26 classes {classes} for model '{model_name}': {exc}. "
+            f"{TEXT_ENCODER_DOWNLOAD_NOTE}"
+        ) from exc
+    yoloe._yoloe26_active_classes = list(classes)
 
 
 def _prepare_segmentation_runtime(
@@ -425,24 +579,16 @@ def _prepare_segmentation_runtime(
     classes = _parse_classes(prompt)
     yoloe, model_path, device = _validate_model_bundle(model)
     predict_kwargs = _build_predict_kwargs(device, conf, imgsz, iou, max_det)
+    _configure_prompt_classes(yoloe, classes, model_path)
     return classes, predict_kwargs, yoloe, model_path
 
 
 def _run_single_prediction(
     yoloe,
     classes: list[str],
-    model_path: str,
     img_bgr: np.ndarray,
     predict_kwargs: dict,
 ):
-    model_name = Path(model_path).name
-    try:
-        yoloe.set_classes(classes)
-    except Exception as exc:
-        raise RuntimeError(
-            f"Failed to configure YOLOE-26 classes {classes} for model '{model_name}': {exc}"
-        ) from exc
-
     try:
         return yoloe.predict(img_bgr, **predict_kwargs)[0]
     except Exception as exc:
@@ -505,8 +651,11 @@ def _build_binary_mask(
         return merged
 
     for mask_tensor in result.masks.data:
-        mask = mask_tensor.detach().cpu().numpy()
+        # .float() normalizes the uint8 0/1 masks recent Ultralytics returns.
+        mask = mask_tensor.detach().float().cpu().numpy()
         if mask.shape != (height, width):
+            # Fallback only: with retina_masks=True masks already arrive at the
+            # original image resolution.
             mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
         merged = np.maximum(merged, _threshold_mask(mask, mask_threshold))
 
@@ -524,8 +673,11 @@ def _build_per_instance_masks(
         return masks
 
     for mask_tensor in result.masks.data:
-        mask = mask_tensor.detach().cpu().numpy()
+        # .float() normalizes the uint8 0/1 masks recent Ultralytics returns.
+        mask = mask_tensor.detach().float().cpu().numpy()
         if mask.shape != (height, width):
+            # Fallback only: with retina_masks=True masks already arrive at the
+            # original image resolution.
             mask = cv2.resize(mask, (width, height), interpolation=cv2.INTER_NEAREST)
         masks.append(_threshold_mask(mask, mask_threshold))
 
@@ -758,14 +910,16 @@ def _serialize_metadata(payload: dict) -> str:
 class YOLOE26LoadModel:
     """Validate and prepare a YOLOE-26 model for prompt segmentation."""
 
+    DESCRIPTION = (
+        "Load a YOLOE-26 open-vocabulary segmentation model from the ComfyUI model "
+        "directories, downloading official weights on demand when auto_download is "
+        "enabled. " + TEXT_ENCODER_DOWNLOAD_NOTE
+    )
+
     @classmethod
     def INPUT_TYPES(cls):
         choices = _candidate_model_choices()
-        default = choices[0] if choices else "yoloe-26s-seg.pt (downloadable)"
-        for c in choices:
-            if c == "yoloe-26s-seg.pt (local)":
-                default = c
-                break
+        default = "yoloe-26s-seg.pt" if "yoloe-26s-seg.pt" in choices else choices[0]
         return {
             "required": {
                 "model_name": (
@@ -773,10 +927,10 @@ class YOLOE26LoadModel:
                     {
                         "default": default,
                         "tooltip": (
-                            "Choose a YOLOE-26 model. Labels marked (local) exist in your ComfyUI model "
-                            "directories; labels marked (downloadable) will be fetched automatically when "
-                            "auto_download is enabled. After the first download, refresh ComfyUI "
-                            "(press F5) to see the model listed as (local)."
+                            "YOLOE-26 model file name. Official models are downloaded "
+                            "automatically when auto_download is enabled; other entries are "
+                            ".pt files found in your ComfyUI model directories (press 'r' in "
+                            "ComfyUI to refresh the list after adding files)."
                         ),
                     },
                 ),
@@ -799,6 +953,17 @@ class YOLOE26LoadModel:
                         ),
                     },
                 ),
+                "offload_to_cpu": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": (
+                            "Move the model to CPU after each segmentation node finishes to free "
+                            "GPU memory for diffusion models. Slightly slower because weights are "
+                            "transferred back to the GPU on the next run."
+                        ),
+                    },
+                ),
             },
         }
 
@@ -807,8 +972,34 @@ class YOLOE26LoadModel:
     FUNCTION = "load_model"
     CATEGORY = "YOLOE26"
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, model_name):
+        """Accept legacy suffixed values from previously saved workflows.
+
+        Older releases embedded availability suffixes such as
+        'yoloe-26s-seg.pt (downloadable)' in the dropdown values. Defining this
+        validator makes ComfyUI skip the strict combo containment check for
+        model_name, and execution normalizes the value, so those workflows keep
+        running.
+        """
+        try:
+            selected = _normalize_model_selection(model_name)
+        except (TypeError, ValueError) as exc:
+            return str(exc)
+        if selected not in _candidate_model_base_names():
+            return (
+                f"Unknown YOLOE-26 model '{selected}'. Choose an official model "
+                f"({', '.join(ALLOWED_AUTO_DOWNLOAD_MODELS)}) or place the .pt file "
+                "in a supported ComfyUI model directory."
+            )
+        return True
+
     def load_model(
-        self, model_name: str, device: str = "auto", auto_download: bool = True
+        self,
+        model_name: str,
+        device: str = "auto",
+        auto_download: bool = True,
+        offload_to_cpu: bool = False,
     ):
         if _validate_device(device) != device:
             raise ValueError(f"Unsupported device '{device}'.")
@@ -822,42 +1013,35 @@ class YOLOE26LoadModel:
         except FileNotFoundError as exc:
             if not auto_download:
                 raise FileNotFoundError(
-                    f"{exc} Enable auto_download to let Ultralytics try downloading '{selected_model_name}', "
+                    f"{exc} Enable auto_download to let this node download '{selected_model_name}', "
                     "or manually place the .pt file in a supported ComfyUI model directory."
                 ) from exc
 
             download_model_name = _validate_auto_download_model_name(selected_model_name)
-            download_config = ALLOWED_AUTO_DOWNLOAD_MODELS[download_model_name]
             try:
-                from ultralytics.utils.downloads import attempt_download_asset
-
-                downloaded = attempt_download_asset(
-                    download_model_name,
-                    repo=download_config["repo"],
-                    release=download_config["release"],
-                )
-                if not Path(downloaded).exists():
-                    raise FileNotFoundError(
-                        f"Ultralytics did not return a downloadable path for '{download_model_name}'."
-                    )
-                _verify_auto_downloaded_model(download_model_name, downloaded)
-                resolved = _persist_auto_downloaded_model(download_model_name, downloaded)
-                runtime_model = _create_yoloe(resolved)
+                resolved = _download_model_to_target(download_model_name)
             except Exception as download_exc:
                 raise RuntimeError(
-                    f"Failed to auto-download YOLOE-26 model '{model_name}': {download_exc}. "
+                    f"Failed to auto-download YOLOE-26 model '{selected_model_name}': {download_exc}. "
                     "Check network access, local write permissions, and Ultralytics upstream availability."
                 ) from download_exc
+            _verify_auto_downloaded_model(download_model_name, resolved)
 
-        else:
-            try:
-                runtime_model = _create_yoloe(resolved)
-            except Exception as exc:
-                raise RuntimeError(
-                    f"Failed to validate YOLOE-26 model '{Path(resolved).name}': {exc}"
-                ) from exc
+        try:
+            runtime_model = _create_yoloe(resolved)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to load YOLOE-26 model '{Path(resolved).name}': {exc}"
+            ) from exc
 
-        return ({"model": runtime_model, "model_path": resolved, "device": device},)
+        return (
+            {
+                "model": runtime_model,
+                "model_path": resolved,
+                "device": device,
+                "offload_to_cpu": bool(offload_to_cpu),
+            },
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -870,6 +1054,12 @@ class YOLOE26PromptSegment:
 
     Returns an annotated preview image and a merged binary mask.
     """
+
+    DESCRIPTION = (
+        "Segment objects matching a comma-separated text prompt and return an "
+        "annotated preview image plus a merged binary mask at the original "
+        "image resolution."
+    )
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -928,7 +1118,12 @@ class YOLOE26PromptSegment:
                         "min": 0.0,
                         "max": 1.0,
                         "step": 0.01,
-                        "tooltip": "Threshold used to binarize instance masks.",
+                        "tooltip": (
+                            "Threshold used to binarize instance masks. Recent Ultralytics "
+                            "releases already return binary masks, in which case values "
+                            "below 1.0 have no additional effect and exactly 1.0 empties "
+                            "every mask."
+                        ),
                     },
                 ),
                 "imgsz": (
@@ -976,32 +1171,37 @@ class YOLOE26PromptSegment:
         batch_annotated: list[torch.Tensor] = []
         batch_masks: list[torch.Tensor] = []
         total_detections = 0
+        progress = _new_progress_bar(int(image.shape[0]))
 
-        for index in range(image.shape[0]):
-            img_bgr = _comfy_image_to_bgr(image[index])
-            height, width = img_bgr.shape[:2]
-            result = _run_single_prediction(
-                yoloe, classes, model_path, img_bgr, predict_kwargs
-            )
-            instance_masks = _build_per_instance_masks(
-                result, height, width, mask_threshold
-            )
+        try:
+            for index in range(image.shape[0]):
+                _raise_if_interrupted()
+                img_bgr = _comfy_image_to_bgr(image[index])
+                height, width = img_bgr.shape[:2]
+                result = _run_single_prediction(yoloe, classes, img_bgr, predict_kwargs)
+                instance_masks = _build_per_instance_masks(
+                    result, height, width, mask_threshold
+                )
 
-            annotated_bgr = result.plot(
-                conf=show_conf,
-                labels=show_labels,
-                boxes=show_boxes,
-                masks=show_masks,
-            )
-            batch_annotated.append(_bgr_to_comfy_image(annotated_bgr))
+                annotated_bgr = result.plot(
+                    conf=show_conf,
+                    labels=show_labels,
+                    boxes=show_boxes,
+                    masks=show_masks,
+                )
+                batch_annotated.append(_bgr_to_comfy_image(annotated_bgr))
 
-            merged = _build_binary_mask(result, height, width, mask_threshold)
-            batch_masks.append(torch.from_numpy(merged))
+                merged = _build_binary_mask(result, height, width, mask_threshold)
+                batch_masks.append(torch.from_numpy(merged))
 
-            records = _extract_detection_records(
-                result, classes, height, width, index, instance_masks=instance_masks
-            )
-            total_detections += len(records)
+                records = _extract_detection_records(
+                    result, classes, height, width, index, instance_masks=instance_masks
+                )
+                total_detections += len(records)
+                if progress is not None:
+                    progress.update(1)
+        finally:
+            _maybe_offload_model(model)
 
         annotated_batch = torch.stack(batch_annotated, dim=0)
         mask_batch = torch.stack(batch_masks, dim=0)
@@ -1016,6 +1216,11 @@ class YOLOE26PromptSegment:
 
 class YOLOE26DetectionMetadata:
     """Run YOLOE-26 prompt segmentation and return structured detection metadata as JSON."""
+
+    DESCRIPTION = (
+        "Run prompt segmentation and return structured JSON metadata (boxes, "
+        "scores, class names, mask areas) without producing image outputs."
+    )
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -1073,7 +1278,12 @@ class YOLOE26DetectionMetadata:
                         "min": 0.0,
                         "max": 1.0,
                         "step": 0.01,
-                        "tooltip": "Threshold used when measuring instance mask area.",
+                        "tooltip": (
+                            "Threshold used when measuring instance mask area. Recent "
+                            "Ultralytics releases already return binary masks, in which "
+                            "case values below 1.0 have no additional effect and exactly "
+                            "1.0 empties every mask."
+                        ),
                     },
                 ),
                 "imgsz": (
@@ -1112,34 +1322,39 @@ class YOLOE26DetectionMetadata:
 
         image_entries: list[dict] = []
         total_detections = 0
+        progress = _new_progress_bar(int(image.shape[0]))
 
-        for batch_index in range(image.shape[0]):
-            img_bgr = _comfy_image_to_bgr(image[batch_index])
-            height, width = img_bgr.shape[:2]
-            result = _run_single_prediction(
-                yoloe, classes, model_path, img_bgr, predict_kwargs
-            )
-            instance_masks = _build_per_instance_masks(
-                result, height, width, mask_threshold
-            )
-            records = _extract_detection_records(
-                result,
-                classes,
-                height,
-                width,
-                batch_index,
-                instance_masks=instance_masks,
-            )
-            total_detections += len(records)
-            image_entries.append(
-                {
-                    "batch_index": int(batch_index),
-                    "image_height": int(height),
-                    "image_width": int(width),
-                    "detection_count": len(records),
-                    "detections": records,
-                }
-            )
+        try:
+            for batch_index in range(image.shape[0]):
+                _raise_if_interrupted()
+                img_bgr = _comfy_image_to_bgr(image[batch_index])
+                height, width = img_bgr.shape[:2]
+                result = _run_single_prediction(yoloe, classes, img_bgr, predict_kwargs)
+                instance_masks = _build_per_instance_masks(
+                    result, height, width, mask_threshold
+                )
+                records = _extract_detection_records(
+                    result,
+                    classes,
+                    height,
+                    width,
+                    batch_index,
+                    instance_masks=instance_masks,
+                )
+                total_detections += len(records)
+                image_entries.append(
+                    {
+                        "batch_index": int(batch_index),
+                        "image_height": int(height),
+                        "image_width": int(width),
+                        "detection_count": len(records),
+                        "detections": records,
+                    }
+                )
+                if progress is not None:
+                    progress.update(1)
+        finally:
+            _maybe_offload_model(model)
 
         metadata_json = _serialize_metadata(
             {
@@ -1167,6 +1382,12 @@ class YOLOE26InstanceMasks:
     Supports batch input and returns JSON metadata describing which output mask
     belongs to which input image and detection.
     """
+
+    DESCRIPTION = (
+        "Segment with a text prompt and return one mask per detected instance, "
+        "with JSON metadata mapping each output mask to its source image and "
+        "detection."
+    )
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -1224,7 +1445,12 @@ class YOLOE26InstanceMasks:
                         "min": 0.0,
                         "max": 1.0,
                         "step": 0.01,
-                        "tooltip": "Threshold used when binarizing instance masks.",
+                        "tooltip": (
+                            "Threshold used when binarizing instance masks. Recent "
+                            "Ultralytics releases already return binary masks, in which "
+                            "case values below 1.0 have no additional effect and exactly "
+                            "1.0 empties every mask."
+                        ),
                     },
                 ),
                 "imgsz": (
@@ -1264,51 +1490,56 @@ class YOLOE26InstanceMasks:
         all_masks: list[torch.Tensor] = []
         image_entries: list[dict] = []
         total_instances = 0
+        progress = _new_progress_bar(int(image.shape[0]))
 
-        for batch_index in range(image.shape[0]):
-            img_bgr = _comfy_image_to_bgr(image[batch_index])
-            height, width = img_bgr.shape[:2]
-            result = _run_single_prediction(
-                yoloe, classes, model_path, img_bgr, predict_kwargs
-            )
+        try:
+            for batch_index in range(image.shape[0]):
+                _raise_if_interrupted()
+                img_bgr = _comfy_image_to_bgr(image[batch_index])
+                height, width = img_bgr.shape[:2]
+                result = _run_single_prediction(yoloe, classes, img_bgr, predict_kwargs)
 
-            instance_masks = _build_per_instance_masks(
-                result, height, width, mask_threshold
-            )
-            records = _extract_detection_records(
-                result,
-                classes,
-                height,
-                width,
-                batch_index,
-                instance_masks=instance_masks,
-            )
+                instance_masks = _build_per_instance_masks(
+                    result, height, width, mask_threshold
+                )
+                records = _extract_detection_records(
+                    result,
+                    classes,
+                    height,
+                    width,
+                    batch_index,
+                    instance_masks=instance_masks,
+                )
 
-            output_mask_indices: list[int] = []
-            output_detections: list[dict] = []
-            for record in records:
-                mask_index = record.get("mask_index")
-                if mask_index is None or mask_index >= len(instance_masks):
-                    continue
-                all_masks.append(torch.from_numpy(instance_masks[mask_index]))
-                output_index = len(all_masks) - 1
-                output_mask_indices.append(output_index)
-                output_record = dict(record)
-                output_record["output_mask_index"] = output_index
-                output_detections.append(output_record)
+                output_mask_indices: list[int] = []
+                output_detections: list[dict] = []
+                for record in records:
+                    mask_index = record.get("mask_index")
+                    if mask_index is None or mask_index >= len(instance_masks):
+                        continue
+                    all_masks.append(torch.from_numpy(instance_masks[mask_index]))
+                    output_index = len(all_masks) - 1
+                    output_mask_indices.append(output_index)
+                    output_record = dict(record)
+                    output_record["output_mask_index"] = output_index
+                    output_detections.append(output_record)
 
-            total_instances += len(output_mask_indices)
-            image_entries.append(
-                {
-                    "batch_index": int(batch_index),
-                    "image_height": int(height),
-                    "image_width": int(width),
-                    "instance_count": len(output_mask_indices),
-                    "output_mask_indices": output_mask_indices,
-                    "detections": output_detections,
-                    "is_empty_result": bool(len(output_mask_indices) == 0),
-                }
-            )
+                total_instances += len(output_mask_indices)
+                image_entries.append(
+                    {
+                        "batch_index": int(batch_index),
+                        "image_height": int(height),
+                        "image_width": int(width),
+                        "instance_count": len(output_mask_indices),
+                        "output_mask_indices": output_mask_indices,
+                        "detections": output_detections,
+                        "is_empty_result": bool(len(output_mask_indices) == 0),
+                    }
+                )
+                if progress is not None:
+                    progress.update(1)
+        finally:
+            _maybe_offload_model(model)
 
         if not all_masks:
             height = int(image.shape[1])
@@ -1339,6 +1570,11 @@ class YOLOE26InstanceMasks:
 
 class YOLOE26ClassMasks:
     """Run YOLOE-26 prompt segmentation and output one merged mask per prompt class."""
+
+    DESCRIPTION = (
+        "Segment with a text prompt and return one merged mask per prompt "
+        "class (all-zero when a class has no detections), with JSON metadata."
+    )
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -1396,7 +1632,12 @@ class YOLOE26ClassMasks:
                         "min": 0.0,
                         "max": 1.0,
                         "step": 0.01,
-                        "tooltip": "Threshold used when binarizing instance masks.",
+                        "tooltip": (
+                            "Threshold used when binarizing instance masks. Recent "
+                            "Ultralytics releases already return binary masks, in which "
+                            "case values below 1.0 have no additional effect and exactly "
+                            "1.0 empties every mask."
+                        ),
                     },
                 ),
                 "imgsz": (
@@ -1435,32 +1676,37 @@ class YOLOE26ClassMasks:
 
         all_class_masks: list[torch.Tensor] = []
         entries: list[dict] = []
+        progress = _new_progress_bar(int(image.shape[0]))
 
-        for batch_index in range(image.shape[0]):
-            img_bgr = _comfy_image_to_bgr(image[batch_index])
-            height, width = img_bgr.shape[:2]
-            result = _run_single_prediction(
-                yoloe, classes, model_path, img_bgr, predict_kwargs
-            )
-            instance_masks = _build_per_instance_masks(
-                result, height, width, mask_threshold
-            )
-            records = _extract_detection_records(
-                result,
-                classes,
-                height,
-                width,
-                batch_index,
-                instance_masks=instance_masks,
-            )
-            class_masks, class_entries = _build_class_masks_from_records(
-                records, instance_masks, classes, height, width, batch_index
-            )
+        try:
+            for batch_index in range(image.shape[0]):
+                _raise_if_interrupted()
+                img_bgr = _comfy_image_to_bgr(image[batch_index])
+                height, width = img_bgr.shape[:2]
+                result = _run_single_prediction(yoloe, classes, img_bgr, predict_kwargs)
+                instance_masks = _build_per_instance_masks(
+                    result, height, width, mask_threshold
+                )
+                records = _extract_detection_records(
+                    result,
+                    classes,
+                    height,
+                    width,
+                    batch_index,
+                    instance_masks=instance_masks,
+                )
+                class_masks, class_entries = _build_class_masks_from_records(
+                    records, instance_masks, classes, height, width, batch_index
+                )
 
-            for entry, class_mask in zip(class_entries, class_masks):
-                all_class_masks.append(torch.from_numpy(class_mask))
-                entry["output_mask_index"] = len(all_class_masks) - 1
-                entries.append(entry)
+                for entry, class_mask in zip(class_entries, class_masks):
+                    all_class_masks.append(torch.from_numpy(class_mask))
+                    entry["output_mask_index"] = len(all_class_masks) - 1
+                    entries.append(entry)
+                if progress is not None:
+                    progress.update(1)
+        finally:
+            _maybe_offload_model(model)
 
         if not all_class_masks:
             height = int(image.shape[1])
@@ -1494,6 +1740,11 @@ class YOLOE26ClassMasks:
 
 class YOLOE26RefineMask:
     """Apply binary mask refinement operations to a ComfyUI MASK batch."""
+
+    DESCRIPTION = (
+        "Post-process masks (morphology, largest component, hole filling, "
+        "minimum area) without re-running detection."
+    )
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -1619,6 +1870,12 @@ class YOLOE26RefineMask:
 class YOLOE26SelectBestInstance:
     """Select a single best instance mask from YOLOE-26 instance mask outputs."""
 
+    DESCRIPTION = (
+        "Select a single best mask from YOLOE-26 Instance Masks outputs. With a "
+        "batch of input images, selection is global across the whole batch, not "
+        "per image."
+    )
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -1638,7 +1895,11 @@ class YOLOE26SelectBestInstance:
                     SELECTION_MODES,
                     {
                         "default": "highest_confidence",
-                        "tooltip": "Strategy used when selecting the best instance.",
+                        "tooltip": (
+                            "Strategy used when selecting the best instance. With batched "
+                            "input images the best instance is chosen across the entire "
+                            "batch, not per image."
+                        ),
                     },
                 ),
             },

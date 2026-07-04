@@ -8,7 +8,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REQUIREMENTS_PATH = ROOT / "requirements.txt"
-MINIMUM_ULTRALYTICS_SPEC = "ultralytics>=8.3.200"
+# Declared compatibility window. The floor is the oldest API family the code
+# targets; actual end-to-end validation was performed on 8.4.26 and 8.4.41
+# (see README "Tested With"). tests/test_real_ultralytics_smoke.py exercises
+# whichever ultralytics version is installed.
+MINIMUM_ULTRALYTICS_SPEC = "ultralytics>=8.3.200,<9.0.0"
 
 
 @dataclass(frozen=True)

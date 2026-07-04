@@ -8,7 +8,7 @@
   "2": {
     "class_type": "YOLOE26LoadModel",
     "inputs": {
-      "model_name": "yoloe-26s-seg.pt (downloadable)",
+      "model_name": "yoloe-26s-seg.pt",
       "device": "auto",
       "auto_download": true
     }

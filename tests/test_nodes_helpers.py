@@ -82,7 +82,13 @@ class FakeModel:
 class TestNodesHelpers(unittest.TestCase):
     @staticmethod
     def _load_workflow(path: Path) -> dict:
-        return json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        # Drop metadata keys such as "_readme"; only node definitions are dicts.
+        return {
+            node_id: node_def
+            for node_id, node_def in payload.items()
+            if isinstance(node_def, dict)
+        }
 
     @staticmethod
     def _workflow_custom_node_classes(workflow: dict) -> list[str]:
@@ -156,31 +162,53 @@ class TestNodesHelpers(unittest.TestCase):
                 node_name,
             )
 
-    def test_load_model_input_types_exposes_model_choice_list(self):
+    def test_load_model_input_types_exposes_plain_model_choice_list(self):
         input_types = nodes.YOLOE26LoadModel.INPUT_TYPES()
         model_type, model_config = input_types["required"]["model_name"]
         self.assertIsInstance(model_type, list)
-        self.assertIn("yoloe-26s-seg.pt (downloadable)", model_type)
-        self.assertIn("yoloe-26m-seg.pt (downloadable)", model_type)
-        self.assertIn("yoloe-26l-seg.pt (downloadable)", model_type)
-        self.assertIn("yoloe-26x-seg.pt (downloadable)", model_type)
-        self.assertEqual(model_config["default"], model_type[0])
+        self.assertIn("yoloe-26s-seg.pt", model_type)
+        self.assertIn("yoloe-26m-seg.pt", model_type)
+        self.assertIn("yoloe-26l-seg.pt", model_type)
+        self.assertIn("yoloe-26x-seg.pt", model_type)
+        # Values must be plain file names: suffixed values baked into saved
+        # workflows break combo validation once local availability changes.
+        for choice in model_type:
+            self.assertNotIn("(local)", choice)
+            self.assertNotIn("(downloadable)", choice)
+        self.assertEqual(model_type[0], "yoloe-26s-seg.pt")
+        self.assertEqual(model_config["default"], "yoloe-26s-seg.pt")
         self.assertIn("tooltip", model_config)
 
-    def test_load_model_input_types_prefers_local_default_when_available(self):
+    def test_load_model_input_types_falls_back_to_first_choice_without_recommended_model(self):
         with patch.object(
             nodes,
             "_candidate_model_choices",
-            return_value=[
-                "yoloe-26s-seg.pt (local)",
-                "yoloe-26m-seg.pt (downloadable)",
-            ],
+            return_value=["custom-a.pt", "custom-b.pt"],
         ):
             input_types = nodes.YOLOE26LoadModel.INPUT_TYPES()
 
         model_type, model_config = input_types["required"]["model_name"]
-        self.assertEqual(model_type[0], "yoloe-26s-seg.pt (local)")
-        self.assertEqual(model_config["default"], "yoloe-26s-seg.pt (local)")
+        self.assertEqual(model_config["default"], "custom-a.pt")
+
+    def test_validate_inputs_accepts_plain_and_legacy_suffixed_model_names(self):
+        self.assertIs(
+            nodes.YOLOE26LoadModel.VALIDATE_INPUTS("yoloe-26s-seg.pt"), True
+        )
+        self.assertIs(
+            nodes.YOLOE26LoadModel.VALIDATE_INPUTS("yoloe-26s-seg.pt (downloadable)"),
+            True,
+        )
+        self.assertIs(
+            nodes.YOLOE26LoadModel.VALIDATE_INPUTS("yoloe-26s-seg.pt (local)"), True
+        )
+
+    def test_validate_inputs_rejects_unknown_model_with_message(self):
+        result = nodes.YOLOE26LoadModel.VALIDATE_INPUTS("not-a-model.pt")
+        self.assertIsInstance(result, str)
+        self.assertIn("not-a-model.pt", result)
+
+        result_empty = nodes.YOLOE26LoadModel.VALIDATE_INPUTS("   ")
+        self.assertIsInstance(result_empty, str)
 
     def test_load_model_raises_file_not_found_when_model_missing_and_auto_download_disabled(
         self,
@@ -197,57 +225,65 @@ class TestNodesHelpers(unittest.TestCase):
         mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
         mock_create.assert_not_called()
 
-    def test_load_model_downloads_missing_model_when_auto_download_enabled(self):
-        runtime_model = FakeModel([], ckpt_path="L:/downloaded/yoloe-26s-seg.pt")
+    def test_load_model_downloads_missing_model_directly_into_target_dir(self):
+        runtime_model = FakeModel([])
 
-        with patch.object(
-            nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
-        ) as mock_resolve:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target_dir = Path(temp_dir) / "ultralytics" / "segm"
+
+            def fake_attempt_download(file, repo, release):
+                path = Path(file)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"weights")
+                return str(path)
+
             with patch.object(
-                nodes, "_validate_auto_download_model_name", return_value="yoloe-26s-seg.pt"
-            ) as mock_validate:
+                nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
+            ) as mock_resolve:
                 with patch.object(
-                    nodes, "_verify_auto_downloaded_model"
-                ) as mock_verify:
+                    nodes,
+                    "_preferred_auto_download_target_dir",
+                    return_value=target_dir,
+                ):
                     with patch.object(
-                        nodes,
-                        "_persist_auto_downloaded_model",
-                        return_value="L:/ComfyUI/models/ultralytics/segm/yoloe-26s-seg.pt",
-                    ) as mock_persist:
+                        nodes, "_verify_auto_downloaded_model"
+                    ) as mock_verify:
                         with patch.object(
                             nodes, "_create_yoloe", return_value=runtime_model
                         ) as mock_create:
                             with patch(
-                                "pathlib.Path.exists", return_value=True
-                            ) as mock_exists:
-                                with patch(
-                                    "ultralytics.utils.downloads.attempt_download_asset",
-                                    return_value="L:/downloaded/yoloe-26s-seg.pt",
-                                ) as mock_attempt:
-                                    (bundle,) = nodes.YOLOE26LoadModel().load_model(
-                                        "yoloe-26s-seg.pt (downloadable)", auto_download=True
-                                    )
+                                "ultralytics.utils.downloads.attempt_download_asset",
+                                side_effect=fake_attempt_download,
+                            ) as mock_attempt:
+                                (bundle,) = nodes.YOLOE26LoadModel().load_model(
+                                    "yoloe-26s-seg.pt (downloadable)", auto_download=True
+                                )
 
-        mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
-        mock_validate.assert_called_once_with("yoloe-26s-seg.pt")
-        mock_attempt.assert_called_once_with(
-            "yoloe-26s-seg.pt", repo="ultralytics/assets", release="v8.4.0"
-        )
-        mock_persist.assert_called_once_with(
-            "yoloe-26s-seg.pt", "L:/downloaded/yoloe-26s-seg.pt"
-        )
-        mock_create.assert_called_once_with(
-            "L:/ComfyUI/models/ultralytics/segm/yoloe-26s-seg.pt"
-        )
-        mock_verify.assert_called_once_with(
-            "yoloe-26s-seg.pt", "L:/downloaded/yoloe-26s-seg.pt"
-        )
-        self.assertIs(bundle["model"], runtime_model)
-        self.assertEqual(
-            bundle["model_path"],
-            "L:/ComfyUI/models/ultralytics/segm/yoloe-26s-seg.pt",
-        )
-        self.assertEqual(bundle["device"], "auto")
+            expected_target = str(target_dir / "yoloe-26s-seg.pt")
+            mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
+            mock_attempt.assert_called_once_with(
+                expected_target, repo="ultralytics/assets", release="v8.4.0"
+            )
+            mock_verify.assert_called_once_with("yoloe-26s-seg.pt", expected_target)
+            mock_create.assert_called_once_with(expected_target)
+            self.assertIs(bundle["model"], runtime_model)
+            self.assertEqual(bundle["model_path"], expected_target)
+            self.assertEqual(bundle["device"], "auto")
+            self.assertIs(bundle["offload_to_cpu"], False)
+
+    def test_verify_auto_downloaded_model_removes_file_on_hash_mismatch(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            bad_file = Path(temp_dir) / "yoloe-26s-seg.pt"
+            bad_file.write_bytes(b"corrupted weights")
+
+            with self.assertRaises(RuntimeError) as exc:
+                nodes._verify_auto_downloaded_model("yoloe-26s-seg.pt", str(bad_file))
+
+            self.assertIn("SHA256", str(exc.exception))
+            self.assertFalse(
+                bad_file.exists(),
+                "unverified download must be removed so it cannot be loaded later",
+            )
 
     def test_load_model_does_not_download_when_model_already_exists_even_if_auto_download_enabled(
         self,
@@ -269,98 +305,34 @@ class TestNodesHelpers(unittest.TestCase):
         self.assertEqual(bundle["model_path"], "L:/models/yoloe-26s-seg.pt")
 
     def test_load_model_raises_runtime_error_when_auto_download_fails(self):
-        with patch.object(
-            nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
-        ) as mock_resolve:
-            with patch.object(
-                nodes,
-                "_validate_auto_download_model_name",
-                return_value="yoloe-26s-seg.pt",
-            ):
-                with patch(
-                    "ultralytics.utils.downloads.attempt_download_asset",
-                    side_effect=RuntimeError("network disabled"),
-                ) as mock_attempt:
-                    with self.assertRaises(RuntimeError) as exc:
-                        nodes.YOLOE26LoadModel().load_model(
-                            "yoloe-26s-seg.pt (downloadable)", auto_download=True
-                        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target_dir = Path(temp_dir) / "ultralytics" / "segm"
 
-        mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
-        mock_attempt.assert_called_once_with(
-            "yoloe-26s-seg.pt", repo="ultralytics/assets", release="v8.4.0"
-        )
+            with patch.object(
+                nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
+            ) as mock_resolve:
+                with patch.object(
+                    nodes,
+                    "_preferred_auto_download_target_dir",
+                    return_value=target_dir,
+                ):
+                    with patch(
+                        "ultralytics.utils.downloads.attempt_download_asset",
+                        side_effect=RuntimeError("network disabled"),
+                    ) as mock_attempt:
+                        with self.assertRaises(RuntimeError) as exc:
+                            nodes.YOLOE26LoadModel().load_model(
+                                "yoloe-26s-seg.pt (downloadable)", auto_download=True
+                            )
+
+            mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
+            mock_attempt.assert_called_once_with(
+                str(target_dir / "yoloe-26s-seg.pt"),
+                repo="ultralytics/assets",
+                release="v8.4.0",
+            )
         self.assertIn("auto-download", str(exc.exception))
         self.assertIn("yoloe-26s-seg.pt", str(exc.exception))
-
-    def test_load_model_runtime_model_path_prefers_inner_pt_path_fallback(self):
-        runtime_model = FakeModel([], pt_path="L:/cache/yoloe-26s-seg.pt")
-
-        with patch.object(
-            nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
-        ):
-            with patch.object(
-                nodes, "_validate_auto_download_model_name", return_value="yoloe-26s-seg.pt"
-            ):
-                with patch.object(
-                    nodes, "_verify_auto_downloaded_model"
-                ) as mock_verify:
-                    with patch.object(
-                        nodes,
-                        "_persist_auto_downloaded_model",
-                        return_value="L:/cache/yoloe-26s-seg.pt",
-                    ):
-                        with patch.object(nodes, "_create_yoloe", return_value=runtime_model):
-                            with patch(
-                                "pathlib.Path.exists", return_value=True
-                            ) as mock_exists:
-                                with patch(
-                                    "ultralytics.utils.downloads.attempt_download_asset",
-                                    return_value="L:/cache/yoloe-26s-seg.pt",
-                                ) as mock_attempt:
-                                    (bundle,) = nodes.YOLOE26LoadModel().load_model(
-                                        "yoloe-26s-seg.pt", auto_download=True
-                                    )
-
-        mock_attempt.assert_called_once_with(
-            "yoloe-26s-seg.pt", repo="ultralytics/assets", release="v8.4.0"
-        )
-        mock_verify.assert_called_once_with(
-            "yoloe-26s-seg.pt", "L:/cache/yoloe-26s-seg.pt"
-        )
-        self.assertEqual(bundle["model_path"], "L:/cache/yoloe-26s-seg.pt")
-
-    def test_load_model_runtime_model_path_falls_back_to_model_name(self):
-        runtime_model = FakeModel([])
-
-        with patch.object(
-            nodes, "_resolve_model_path", side_effect=FileNotFoundError("missing model")
-        ):
-            with patch.object(
-                nodes, "_validate_auto_download_model_name", return_value="yoloe-26s-seg.pt"
-            ):
-                with patch.object(nodes, "_verify_auto_downloaded_model") as mock_verify:
-                    with patch.object(
-                        nodes,
-                        "_persist_auto_downloaded_model",
-                        return_value="yoloe-26s-seg.pt",
-                    ):
-                        with patch.object(nodes, "_create_yoloe", return_value=runtime_model):
-                            with patch(
-                                "ultralytics.utils.downloads.attempt_download_asset",
-                                return_value="yoloe-26s-seg.pt",
-                            ) as mock_attempt:
-                                (bundle,) = nodes.YOLOE26LoadModel().load_model(
-                                    "yoloe-26s-seg.pt", auto_download=True
-                                )
-
-        mock_attempt.assert_called_once_with(
-            "yoloe-26s-seg.pt", repo="ultralytics/assets", release="v8.4.0"
-        )
-        mock_verify.assert_called_once_with(
-            "yoloe-26s-seg.pt", "yoloe-26s-seg.pt"
-        )
-        self.assertEqual(bundle["model_path"], "yoloe-26s-seg.pt")
 
     def test_load_model_raises_runtime_error_when_local_model_validation_fails(
         self,
@@ -380,7 +352,7 @@ class TestNodesHelpers(unittest.TestCase):
 
         mock_resolve.assert_called_once_with("yoloe-26s-seg.pt")
         mock_create.assert_called_once_with("L:/models/yoloe-26s-seg.pt")
-        self.assertIn("Failed to validate YOLOE-26 model", str(exc.exception))
+        self.assertIn("Failed to load YOLOE-26 model", str(exc.exception))
 
     def test_package_init_direct_file_import_preserves_real_mappings_when_package_semantics_exist(self):
         module_name = "comfyui_yoloe26_init_direct_import"
@@ -483,22 +455,25 @@ class TestNodesHelpers(unittest.TestCase):
                     f"{workflow_path.name}: unknown class_type {class_type}",
                 )
 
-    def test_ci_validate_requirements_pin_accepts_tested_minimum_floor(self):
+    def test_ci_validate_requirements_pin_accepts_tested_bounded_spec(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             requirements_path = Path(temp_dir) / "requirements.txt"
-            requirements_path.write_text("ultralytics>=8.3.200\n", encoding="utf-8")
+            requirements_path.write_text(
+                "ultralytics>=8.3.200,<9.0.0\n", encoding="utf-8"
+            )
 
             self.assertEqual(run_ci.validate_requirements_pin(requirements_path), [])
 
-    def test_ci_validate_requirements_pin_rejects_missing_tested_minimum_floor(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            requirements_path = Path(temp_dir) / "requirements.txt"
-            requirements_path.write_text("ultralytics>=8.3.100\n", encoding="utf-8")
+    def test_ci_validate_requirements_pin_rejects_unbounded_or_wrong_spec(self):
+        for bad_spec in ("ultralytics>=8.3.100\n", "ultralytics>=8.3.200\n"):
+            with tempfile.TemporaryDirectory() as temp_dir:
+                requirements_path = Path(temp_dir) / "requirements.txt"
+                requirements_path.write_text(bad_spec, encoding="utf-8")
 
-            failures = run_ci.validate_requirements_pin(requirements_path)
+                failures = run_ci.validate_requirements_pin(requirements_path)
 
-        self.assertEqual(len(failures), 1)
-        self.assertIn("tested minimum ultralytics floor", failures[0])
+            self.assertEqual(len(failures), 1, bad_spec)
+            self.assertIn("tested minimum ultralytics floor", failures[0])
 
     def test_ci_build_steps_include_compile_and_pytest(self):
         steps = run_ci.build_ci_steps()
@@ -666,12 +641,20 @@ class TestNodesHelpers(unittest.TestCase):
                 "imgsz": 640,
                 "max_det": 300,
                 "verbose": False,
+                "retina_masks": True,
             },
         )
         self.assertNotIn("device", auto_kwargs)
 
         cuda_kwargs = nodes._build_predict_kwargs("cuda:0", 0.25, 640, 0.7, 300)
         self.assertEqual(cuda_kwargs["device"], "cuda:0")
+
+    def test_build_predict_kwargs_requests_native_resolution_masks(self):
+        # retina_masks=True keeps masks in the original image space; without it,
+        # Ultralytics returns masks in the letterboxed inference space and a
+        # direct resize misaligns them for padded aspect ratios.
+        kwargs = nodes._build_predict_kwargs("auto", 0.25, 640, 0.7, 300)
+        self.assertIs(kwargs["retina_masks"], True)
 
     def test_build_predict_kwargs_rejects_invalid_values(self):
         with self.assertRaises(ValueError):
@@ -833,7 +816,66 @@ class TestNodesHelpers(unittest.TestCase):
         )
         self.assertEqual(fake_model.predict_history[0]["iou"], 0.4)
         self.assertEqual(fake_model.predict_history[0]["max_det"], 7)
+        self.assertIs(fake_model.predict_history[0]["retina_masks"], True)
         self.assertNotIn("device", fake_model.predict_history[0])
+
+    def test_configure_prompt_classes_runs_once_per_batch_and_caches_across_runs(self):
+        def make_result():
+            return FakeResult(
+                masks=FakeMasks(
+                    [torch.tensor([[1.0, 0.0], [0.0, 0.0]], dtype=torch.float32)]
+                ),
+                boxes=FakeBoxes(
+                    xyxy=torch.tensor([[0.0, 0.0, 1.0, 1.0]], dtype=torch.float32),
+                    cls=torch.tensor([0], dtype=torch.float32),
+                    conf=torch.tensor([0.9], dtype=torch.float32),
+                ),
+            )
+
+        fake_model = FakeModel([make_result() for _ in range(3)])
+        bundle = {
+            "model": fake_model,
+            "model_path": "L:/models/yoloe-26s-seg.pt",
+            "device": "auto",
+        }
+        two_image_batch = torch.zeros((2, 2, 2, 3), dtype=torch.float32)
+
+        nodes.YOLOE26InstanceMasks().segment_instances(bundle, two_image_batch, "person")
+        # set_classes is expensive (text embeddings): once per execution, not per image
+        self.assertEqual(fake_model.classes_history, [["person"]])
+
+        one_image_batch = torch.zeros((1, 2, 2, 3), dtype=torch.float32)
+        nodes.YOLOE26InstanceMasks().segment_instances(bundle, one_image_batch, "person")
+        # unchanged classes are cached across executions of the same loaded model
+        self.assertEqual(fake_model.classes_history, [["person"]])
+
+    def test_configure_prompt_classes_reconfigures_when_classes_change(self):
+        fake_model = FakeModel([])
+        nodes._configure_prompt_classes(fake_model, ["person"], "yoloe-26s-seg.pt")
+        nodes._configure_prompt_classes(fake_model, ["person"], "yoloe-26s-seg.pt")
+        nodes._configure_prompt_classes(fake_model, ["car"], "yoloe-26s-seg.pt")
+        self.assertEqual(fake_model.classes_history, [["person"], ["car"]])
+
+    def test_maybe_offload_model_moves_model_to_cpu_only_when_requested(self):
+        class OffloadableModel:
+            def __init__(self):
+                self.to_history = []
+
+            def to(self, device):
+                self.to_history.append(device)
+
+        offloadable = OffloadableModel()
+        nodes._maybe_offload_model(
+            {"model": offloadable, "offload_to_cpu": True, "device": "auto"}
+        )
+        self.assertEqual(offloadable.to_history, ["cpu"])
+
+        untouched = OffloadableModel()
+        nodes._maybe_offload_model(
+            {"model": untouched, "offload_to_cpu": False, "device": "auto"}
+        )
+        nodes._maybe_offload_model({"model": untouched, "device": "auto"})
+        self.assertEqual(untouched.to_history, [])
 
     def test_extract_detection_records_returns_structured_metadata(self):
         result = FakeResult(

@@ -1,5 +1,5 @@
 {
-  "_readme": "NOTE: model_name uses '(downloadable)' label until ComfyUI is restarted after first download. The workflow will run successfully on first use — no restart needed before first run. After restart, the label changes to '(local)'.",
+  "_readme": "model_name is a plain file name. Official YOLOE-26 models are downloaded automatically on first run when auto_download is true. Legacy workflows that still carry '(local)'/'(downloadable)' suffixes keep working.",
   "1": {
     "class_type": "LoadImage",
     "inputs": {
@@ -12,7 +12,7 @@
   "2": {
     "class_type": "YOLOE26LoadModel",
     "inputs": {
-      "model_name": "yoloe-26s-seg.pt (downloadable)",
+      "model_name": "yoloe-26s-seg.pt",
       "device": "auto",
       "auto_download": true
     },
