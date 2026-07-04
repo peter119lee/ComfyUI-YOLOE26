@@ -23,7 +23,3 @@ CLAUDE.md
 RELEASE_CHECKLIST_SHORT.md
 SMOKE_TEST_GUIDE.md
 TODO_RELEASE_AND_USAGE.md
-tests/
-scripts/
-conftest.py
-pytest.ini
