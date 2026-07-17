@@ -14,7 +14,10 @@ jobs:
   publish-node:
     name: Publish to Comfy Registry
     runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'peter119lee' }}
+    # Gate on the fork flag, not a hardcoded owner: the peter119lee ->
+    # Rinne414 account rename made an owner-string guard silently skip
+    # every publish.
+    if: ${{ github.event.repository.fork == false }}
     steps:
       - name: Check out code
         uses: actions/checkout@v4

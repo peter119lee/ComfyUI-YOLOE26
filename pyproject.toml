@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-yoloe26"
 description = "Open-vocabulary prompt segmentation for ComfyUI powered by YOLOE-26."
-version = "0.2.0"
+version = "0.2.1"
 # Matches the repository LICENSE file. Ultralytics itself is AGPL-3.0 and is a
 # separate runtime dependency with its own license terms.
 license = { text = "MIT" }
@@ -18,8 +18,8 @@ classifiers = [
 dependencies = { file = ["requirements.txt"] }
 
 [project.urls]
-Repository = "https://github.com/peter119lee/ComfyUI-YOLOE26"
-"Bug Tracker" = "https://github.com/peter119lee/ComfyUI-YOLOE26/issues"
+Repository = "https://github.com/Rinne414/ComfyUI-YOLOE26"
+"Bug Tracker" = "https://github.com/Rinne414/ComfyUI-YOLOE26/issues"
 "Upstream YOLOE" = "https://github.com/THU-MIG/yoloe"
 
 [tool.comfy]

@@ -25,7 +25,7 @@
 
 ```bash
 cd ComfyUI/custom_nodes
-git clone https://github.com/peter119lee/ComfyUI-YOLOE26.git
+git clone https://github.com/Rinne414/ComfyUI-YOLOE26.git
 pip install -r ComfyUI-YOLOE26/requirements.txt
 ```
 
